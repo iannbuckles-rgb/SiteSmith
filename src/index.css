@@ -1,0 +1,399 @@
+@import "tailwindcss";
+
+:root {
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Custom scrollbars for a polished dark UI */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(113, 113, 122, 0.4);
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.7);
+}
+
+/* ----------------------------------------------------------------------------
+ * Preview stage
+ * ----------------------------------------------------------------------------
+ * The middle column's stage gets:
+ *   - a subtle checkered backdrop that shows the iframe's boundaries
+ *     clearly without distracting the eye from the rendered site;
+ *   - a centered flex layout so device-shaped viewports (`mobile` /
+ *     `tablet` / `desktop`) sit in the middle of the available area;
+ *   - `overflow: auto` so a zoomed iframe (>100%) is scrollable.
+ *
+ * Nothing here is colour-locked to brand variables so the rules
+ * survive any future Tailwind theme tweak.
+ * -------------------------------------------------------------------------*/
+
+.preview-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  /* Neutral checker + a soft radial lift so a floating device frame reads
+   * as a physical object. Theme-aware so the surround matches the app
+   * chrome instead of a hard light slab in dark mode. */
+  --checker: rgba(0, 0, 0, 0.045);
+  --stage-base: #f1f2f4;
+  --stage-glow: rgba(255, 255, 255, 0.6);
+  background-color: var(--stage-base);
+  background-image:
+    radial-gradient(120% 90% at 50% 0%, var(--stage-glow), transparent 60%),
+    linear-gradient(45deg, var(--checker) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--checker) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checker) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--checker) 75%);
+  background-size: 100% 100%, 16px 16px, 16px 16px, 16px 16px, 16px 16px;
+  background-position: 0 0, 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+:root[data-theme="dark"] .preview-stage {
+  --checker: rgba(255, 255, 255, 0.028);
+  --stage-base: #16161a;
+  --stage-glow: rgba(124, 92, 246, 0.06);
+}
+
+/* Column shell holding the device frame plus its dimension caption. */
+.preview-viewport-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.preview-viewport-shell[data-viewport="full"] {
+  width: 100%;
+  height: 100%;
+  gap: 0;
+}
+
+.preview-viewport-caption {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #52525b;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 9999px;
+  padding: 2px 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+:root[data-theme="dark"] .preview-viewport-caption {
+  color: #a1a1aa;
+  background: rgba(24, 24, 27, 0.72);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
+/* ----------------------------------------------------------------------------
+ * Stage overlay cards (empty / building / no-html)
+ * ----------------------------------------------------------------------------
+ * These float over the neutral checker backdrop, so they carry their own
+ * opaque surface and explicit colours instead of the app's zinc utilities
+ * (which assume a dark surface and would render near-invisible here).
+ * -------------------------------------------------------------------------*/
+.preview-stage-card {
+  max-width: 26rem;
+  margin: auto;
+  padding: 28px 32px;
+  text-align: center;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px -18px rgba(15, 23, 42, 0.28), 0 2px 6px -2px rgba(15, 23, 42, 0.08);
+}
+:root[data-theme="dark"] .preview-stage-card {
+  background: #1c1c20;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 20px 50px -18px rgba(0, 0, 0, 0.6);
+}
+
+.preview-stage-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  border-radius: 9999px;
+}
+.preview-stage-icon--brand {
+  color: #7c5cf6;
+  background: rgba(124, 92, 246, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(124, 92, 246, 0.2);
+}
+.preview-stage-icon--warn {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(217, 119, 6, 0.22);
+}
+
+.preview-stage-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 16px;
+  border-radius: 9999px;
+  border: 2px solid rgba(124, 92, 246, 0.22);
+  border-top-color: #7c5cf6;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.preview-stage-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #18181b;
+}
+:root[data-theme="dark"] .preview-stage-title {
+  color: #f4f4f5;
+}
+
+.preview-stage-body {
+  margin-top: 8px;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: #52525b;
+}
+:root[data-theme="dark"] .preview-stage-body {
+  color: #a1a1aa;
+}
+.preview-stage-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.06);
+}
+:root[data-theme="dark"] .preview-stage-body code {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ----------------------------------------------------------------------------
+ * Viewport frame
+ * ----------------------------------------------------------------------------
+ * A neutral card containing the iframe. The `:not([data-viewport="full"])`
+ * shape adds a soft drop shadow so the floating device frame reads as a
+ * physical object over the checker background. `full` strips all
+ * framing because the iframe hugs the available area.
+ * -------------------------------------------------------------------------*/
+
+.preview-viewport-frame {
+  position: relative;
+  background: #ffffff;
+  border-radius: 6px;
+  /* Inner iframe is white; we paint the wrapper white too so any
+   * anti-alias halo at the edge doesn't read as a colour-shift. */
+  box-shadow:
+    0 18px 48px -12px rgba(15, 23, 42, 0.22),
+    0 2px 6px -1px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.preview-viewport-frame[data-viewport="full"] {
+  width: 100%;
+  height: 100%;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* Mobile: a clearly phone-shaped frame with a status-bar-shaped notch
+ * at the top so the user sees they're looking at "what would render
+ * at 375 px" rather than "a small box with reduced content". */
+.preview-viewport-frame[data-viewport="mobile"] {
+  border: 10px solid #1f1f23;
+  border-radius: 28px;
+}
+.preview-viewport-frame[data-viewport="mobile"]::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 6px;
+  border-radius: 3px;
+  background: #2c2c30;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Tablet: narrower bezel, slightly larger radius — reads as a tablet
+ * without the chrome element. */
+.preview-viewport-frame[data-viewport="tablet"] {
+  border: 6px solid #1f1f23;
+  border-radius: 18px;
+}
+
+/* Desktop: a thin bezel only; designers want to see desktop layouts
+ * without a heavy frame interpretation. */
+.preview-viewport-frame[data-viewport="desktop"] {
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  box-shadow: 0 4px 24px -6px rgba(15, 23, 42, 0.16);
+}
+
+/* ----------------------------------------------------------------------------
+ * Zoom wrapper
+ * ----------------------------------------------------------------------------
+ * Counter-sizes the layout box so visual scale === layout scale at
+ * 100%. transform handles the visual enlargement; the parent's
+ * `overflow: auto` provides scrollbars when the iframe runs off the
+ * edge of the device frame. The 200 ms transition makes zoom steps
+ * feel intentional rather than instant.
+ * -------------------------------------------------------------------------*/
+
+.preview-zoom-wrapper {
+  transition: transform 200ms ease-out;
+  /* The transform itself is applied inline so React can update it
+   * without re-mounting the iframe. CSS supplies only the easing. */
+}
+
+/* ----------------------------------------------------------------------------
+ * Optional light theme
+ * ----------------------------------------------------------------------------
+ * The component layer is intentionally Tailwind-utility heavy. This override
+ * map keeps the light theme small and reversible by remapping the zinc surface
+ * utilities used throughout the app when the app root has data-theme="light".
+ * -------------------------------------------------------------------------*/
+
+[data-theme="light"].theme-app-root,
+[data-theme="light"] .bg-zinc-950 {
+  background-color: #f6f8fb;
+}
+
+[data-theme="light"] .bg-zinc-950\/70 {
+  background-color: rgb(246 248 251 / 0.76);
+}
+
+[data-theme="light"] .bg-zinc-950\/60 {
+  background-color: rgb(246 248 251 / 0.68);
+}
+
+[data-theme="light"] .bg-zinc-950\/40 {
+  background-color: rgb(246 248 251 / 0.48);
+}
+
+[data-theme="light"] .bg-zinc-900,
+[data-theme="light"] .bg-zinc-900\/95,
+[data-theme="light"] .bg-zinc-900\/80,
+[data-theme="light"] .bg-zinc-900\/70,
+[data-theme="light"] .bg-zinc-900\/60,
+[data-theme="light"] .bg-zinc-900\/50,
+[data-theme="light"] .bg-zinc-900\/40,
+[data-theme="light"] .bg-zinc-900\/30 {
+  background-color: #ffffff;
+}
+
+[data-theme="light"] .bg-zinc-800 {
+  background-color: #e7edf5;
+}
+
+[data-theme="light"] .border-zinc-900 {
+  border-color: #dbe3ee;
+}
+
+[data-theme="light"] .border-zinc-800 {
+  border-color: #d3dce9;
+}
+
+[data-theme="light"] .border-zinc-700,
+[data-theme="light"] .border-zinc-700\/60 {
+  border-color: #bdc8d7;
+}
+
+[data-theme="light"] .text-zinc-100,
+[data-theme="light"] .text-zinc-200 {
+  color: #111827;
+}
+
+[data-theme="light"] .text-zinc-300 {
+  color: #273449;
+}
+
+[data-theme="light"] .text-zinc-400,
+[data-theme="light"] .text-zinc-500 {
+  color: #64748b;
+}
+
+[data-theme="light"] .text-zinc-600 {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .placeholder-zinc-600::placeholder {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .ring-zinc-800 {
+  --tw-ring-color: #d3dce9;
+}
+
+[data-theme="light"] .shadow-2xl,
+[data-theme="light"] .shadow-xl,
+[data-theme="light"] .shadow-lg {
+  --tw-shadow-color: rgb(15 23 42 / 0.14);
+}
+
+[data-theme="light"] .bg-violet-950\/40 {
+  background-color: rgb(245 243 255 / 0.9);
+}
+
+[data-theme="light"] .bg-violet-700\/30 {
+  background-color: rgb(124 58 237 / 0.12);
+}
+
+[data-theme="light"] .text-violet-100,
+[data-theme="light"] .text-violet-200 {
+  color: #4c1d95;
+}
+
+[data-theme="light"] .bg-amber-950\/60 {
+  background-color: rgb(254 243 199 / 0.9);
+}
+
+[data-theme="light"] .text-amber-100,
+[data-theme="light"] .text-amber-200 {
+  color: #78350f;
+}
+
+[data-theme="light"] .bg-rose-950\/40 {
+  background-color: rgb(255 228 230 / 0.9);
+}
+
+[data-theme="light"] .text-rose-100,
+[data-theme="light"] .text-rose-200 {
+  color: #881337;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="app-root"] *,
+  [data-testid="app-root"] *::before,
+  [data-testid="app-root"] *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
