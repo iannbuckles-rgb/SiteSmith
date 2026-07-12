@@ -18,6 +18,7 @@
  *       remove           — overwrite sourceFile with previousSourceText.
  *       placeholder      — overwrite sourceFile with previousSourceText.
  *       editor-edit      — overwrite sourceFile with previousSourceText.
+ *       editor-reorder   — overwrite sourceFile with previousSourceText.
  *   - Idempotent: re-applying on a zip that's already restored is a
  *     harmless write of the same bytes.
  *   - Best-effort on asset removal: a failure throws so the caller can
@@ -54,7 +55,8 @@ export function undoPatchById(project: LoadedProject, patch: AppliedPatch): void
     case 'fit-style':
     case 'remove':
     case 'placeholder':
-    case 'editor-edit': {
+    case 'editor-edit':
+    case 'editor-reorder': {
       project.zip.file(patch.sourceFile, patch.previousSourceText);
       return;
     }

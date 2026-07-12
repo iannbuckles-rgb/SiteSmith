@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyEditorEdit } from '../src/lib/editorPatch';
+import { applyEditorEdit, applyEditorReorder } from '../src/lib/editorPatch';
 import { buildReport } from '../src/lib/exportService';
 import { undoPatchById } from '../src/lib/undoStack';
 import type { EditorSelection } from '../src/lib/previewControls';
@@ -90,5 +90,80 @@ describe('applyEditorEdit', () => {
     expect(report).toContain('Direct editor edits');
     expect(report).toContain('`href`: `/old`');
     expect(report).toContain('`/new`');
+  });
+});
+
+describe('applyEditorReorder', () => {
+  it('moves a selected button after a sibling while preserving formatted lines', async () => {
+    const source = '<form>\n  <button id="save">Save</button>\n  <button id="cancel">Cancel</button>\n</form>';
+    const project = makeProject({ 'index.html': source });
+    const saveStart = source.indexOf('<button id="save"');
+    const cancelStart = source.indexOf('<button id="cancel"');
+
+    const patch = await applyEditorReorder(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'text',
+        tagName: 'button',
+        label: 'Save',
+        text: 'Save',
+        elementId: 'save',
+        sourceStart: saveStart,
+        sourceEnd: source.indexOf('>', saveStart) + 1,
+        selectorHint: 'button#save',
+      },
+      reference: {
+        tagName: 'button',
+        label: 'Cancel',
+        sourceStart: cancelStart,
+        sourceEnd: source.indexOf('>', cancelStart) + 1,
+        selectorHint: 'button#cancel',
+      },
+      placement: 'after',
+    });
+
+    expect(patch.action).toBe('editor-reorder');
+    expect(await zipText(project, 'index.html')).toBe(
+      '<form>\n  <button id="cancel">Cancel</button>\n  <button id="save">Save</button>\n</form>',
+    );
+
+    undoPatchById(project, patch);
+    expect(await zipText(project, 'index.html')).toBe(source);
+  });
+
+  it('moves a form field before a sibling element', async () => {
+    const source = '<div>\n  <label>Email</label>\n  <input name="email">\n</div>';
+    const project = makeProject({ 'index.html': source });
+    const inputStart = source.indexOf('<input');
+    const labelStart = source.indexOf('<label');
+
+    const patch = await applyEditorReorder(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'element',
+        tagName: 'input',
+        label: 'email',
+        sourceStart: inputStart,
+        sourceEnd: source.indexOf('>', inputStart) + 1,
+        selectorHint: 'input',
+      },
+      reference: {
+        tagName: 'label',
+        label: 'Email',
+        sourceStart: labelStart,
+        sourceEnd: source.indexOf('>', labelStart) + 1,
+        selectorHint: 'label',
+      },
+      placement: 'before',
+    });
+
+    expect(await zipText(project, 'index.html')).toBe(
+      '<div>\n  <input name="email">\n  <label>Email</label>\n</div>',
+    );
+
+    const report = buildReport([patch], []);
+    expect(report).toContain('Direct editor reorders');
+    expect(report).toContain('Placement');
+    expect(report).toContain('before `label`');
   });
 });

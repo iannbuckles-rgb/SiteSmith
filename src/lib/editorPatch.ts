@@ -1,5 +1,5 @@
 import type { AppliedPatch, EditorAppliedEdit, EditorEditField, LoadedProject } from '../types';
-import type { EditorSelection } from './previewControls';
+import type { EditorReorderTarget, EditorSelection } from './previewControls';
 
 export interface ApplyEditorEditInput {
   selection: EditorSelection;
@@ -10,11 +10,33 @@ export interface ApplyEditorEditInput {
   }>;
 }
 
+export interface ApplyEditorReorderInput {
+  selection: EditorSelection;
+  reference: EditorReorderTarget;
+  placement: 'before' | 'after';
+}
+
 type EditorEditPatch = Extract<AppliedPatch, { action: 'editor-edit' }>;
+type EditorReorderPatch = Extract<AppliedPatch, { action: 'editor-reorder' }>;
 
 type OpenTagRange = {
   start: number;
   end: number;
+};
+
+type ElementRange = OpenTagRange;
+
+type ReorderLocator = {
+  tagName: string;
+  label?: string;
+  text?: string;
+  sourceStart?: number;
+  sourceEnd?: number;
+  src?: string;
+  alt?: string;
+  href?: string;
+  elementId?: string;
+  className?: string;
 };
 
 const VOID_TAGS = new Set([
@@ -105,6 +127,83 @@ export async function applyEditorEdit(
   };
 }
 
+export async function applyEditorReorder(
+  project: LoadedProject,
+  input: ApplyEditorReorderInput,
+): Promise<EditorReorderPatch> {
+  if (input.selection.sourceFile.trim().length === 0) {
+    throw new Error('Selected element does not have a source file.');
+  }
+  if (input.placement !== 'before' && input.placement !== 'after') {
+    throw new Error('Unsupported reorder placement.');
+  }
+
+  const zipFile = project.zip.file(input.selection.sourceFile);
+  if (!zipFile) {
+    throw new Error(`Source file "${input.selection.sourceFile}" not found in archive.`);
+  }
+
+  const previousSourceText = await zipFile.async('text');
+  const sourceOpen = locateOpeningTag(previousSourceText, input.selection);
+  const referenceOpen = locateOpeningTag(previousSourceText, input.reference);
+  const sourceElement = findElementRange(previousSourceText, input.selection.tagName.toLowerCase(), sourceOpen);
+  const referenceElement = findElementRange(previousSourceText, input.reference.tagName.toLowerCase(), referenceOpen);
+  const sourceRange = expandRangeForMove(previousSourceText, sourceElement);
+  const referenceRange = expandRangeForMove(previousSourceText, referenceElement);
+
+  if (rangesOverlap(sourceRange, referenceRange)) {
+    throw new Error('Selected element and reorder target overlap.');
+  }
+
+  const movingText = previousSourceText.slice(sourceRange.start, sourceRange.end);
+  const withoutMoving = previousSourceText.slice(0, sourceRange.start)
+    + previousSourceText.slice(sourceRange.end);
+  const removedLength = sourceRange.end - sourceRange.start;
+  const adjustedReference = referenceRange.start > sourceRange.start
+    ? {
+      start: referenceRange.start - removedLength,
+      end: referenceRange.end - removedLength,
+    }
+    : referenceRange;
+  const insertAt = input.placement === 'before'
+    ? adjustedReference.start
+    : adjustedReference.end;
+  const currentSourceText = withoutMoving.slice(0, insertAt)
+    + movingText
+    + withoutMoving.slice(insertAt);
+
+  if (currentSourceText === previousSourceText) {
+    throw new Error('The selected element is already in that position.');
+  }
+
+  project.zip.file(input.selection.sourceFile, currentSourceText);
+
+  return {
+    id: `editor-reorder:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    action: 'editor-reorder',
+    sourceFile: input.selection.sourceFile,
+    target: {
+      kind: input.selection.kind,
+      tagName: input.selection.tagName,
+      label: input.selection.label,
+      selectorHint: input.selection.selectorHint,
+      sourceStart: input.selection.sourceStart,
+      sourceEnd: input.selection.sourceEnd,
+    },
+    reference: {
+      tagName: input.reference.tagName,
+      label: input.reference.label,
+      selectorHint: input.reference.selectorHint,
+      sourceStart: input.reference.sourceStart,
+      sourceEnd: input.reference.sourceEnd,
+    },
+    placement: input.placement,
+    appliedAt: Date.now(),
+    previousSourceText,
+    currentSourceText,
+  };
+}
+
 function normalizeEdits(
   selection: EditorSelection,
   edits: ApplyEditorEditInput['edits'],
@@ -129,7 +228,7 @@ function normalizeEdits(
   return out;
 }
 
-function locateOpeningTag(source: string, selection: EditorSelection): OpenTagRange {
+function locateOpeningTag(source: string, selection: ReorderLocator): OpenTagRange {
   const tagName = selection.tagName.toLowerCase();
   if (
     typeof selection.sourceStart === 'number'
@@ -156,7 +255,7 @@ function locateOpeningTag(source: string, selection: EditorSelection): OpenTagRa
 function findTagByAttribute(
   source: string,
   tagName: string,
-  selection: EditorSelection,
+  selection: ReorderLocator,
 ): OpenTagRange | null {
   const attrCandidates: Array<[string, string | undefined]> = [
     ['src', selection.src],
@@ -174,6 +273,59 @@ function findTagByAttribute(
     }
   }
   return null;
+}
+
+function findElementRange(source: string, tagName: string, opening: OpenTagRange): ElementRange {
+  const tag = readTagAt(source, opening.start);
+  if (!tag || tag.closing || tag.name !== tagName) {
+    throw new Error('Could not locate the selected element in the source file. Reload the preview and select it again.');
+  }
+  if (tag.selfClosing || VOID_TAGS.has(tag.name)) {
+    return { start: opening.start, end: opening.end };
+  }
+  const close = findClosingTagRange(source, tagName, opening.end);
+  return { start: opening.start, end: close.end };
+}
+
+function findClosingTagRange(source: string, tagName: string, openEnd: number): OpenTagRange {
+  let depth = 1;
+  let index = openEnd;
+  while (index < source.length) {
+    const next = source.indexOf('<', index);
+    if (next === -1) break;
+    const tag = readTagAt(source, next);
+    if (!tag) {
+      index = next + 1;
+      continue;
+    }
+    if (tag.name === tagName) {
+      if (tag.closing) {
+        depth -= 1;
+        if (depth === 0) return { start: tag.start, end: tag.end };
+      } else if (!tag.selfClosing && !VOID_TAGS.has(tag.name)) {
+        depth += 1;
+      }
+    }
+    index = tag.end;
+  }
+  throw new Error(`Could not find the closing </${tagName}> tag for the selected element.`);
+}
+
+function expandRangeForMove(source: string, range: ElementRange): ElementRange {
+  const lineStart = source.lastIndexOf('\n', Math.max(0, range.start - 1)) + 1;
+  const hasOnlyIndentBefore = source.slice(lineStart, range.start).trim().length === 0;
+  if (!hasOnlyIndentBefore) return range;
+
+  let end = range.end;
+  while (end < source.length && source[end] !== '\n' && /\s/.test(source[end] ?? '')) {
+    end += 1;
+  }
+  if (source[end] === '\n') end += 1;
+  return { start: lineStart, end };
+}
+
+function rangesOverlap(a: ElementRange, b: ElementRange): boolean {
+  return a.start < b.end && b.start < a.end;
 }
 
 function findTagByText(source: string, tagName: string, text: string | undefined): OpenTagRange | null {

@@ -35,6 +35,7 @@ const PREVIEW_PREFIX = '/preview/';
 const NAV_MESSAGE_TYPE = 'mockswap:navigate';
 const TEXT_EDIT_MESSAGE_TYPE = 'mockswap:text-edit';
 const SELECT_MESSAGE_TYPE = 'mockswap:select-element';
+const REORDER_MESSAGE_TYPE = 'mockswap:reorder-element';
 const SET_EDIT_MODE_MESSAGE_TYPE = 'mockswap:set-edit-mode';
 
 /** True when the Service Worker preview server can run in this context. */
@@ -299,6 +300,7 @@ export function augmentHtml(html: string, sourcePath: string): string {
   const navType = escapeForScript(NAV_MESSAGE_TYPE);
   const editType = escapeForScript(TEXT_EDIT_MESSAGE_TYPE);
   const selectType = escapeForScript(SELECT_MESSAGE_TYPE);
+  const reorderType = escapeForScript(REORDER_MESSAGE_TYPE);
   const editModeType = escapeForScript(SET_EDIT_MODE_MESSAGE_TYPE);
   const body = [
     '(function(){',
@@ -316,7 +318,7 @@ export function augmentHtml(html: string, sourcePath: string): string {
     'if(!ok){try{Object.defineProperty(window,n,{configurable:true,value:mem()});}catch(e){}}',
     '})(names[i]);}',
     // --- nav bridge ---
-    'var __src=' + srcLiteral + ';var __type=' + navType + ';var __editType=' + editType + ';var __selectType=' + selectType + ';var __editModeType=' + editModeType + ';',
+    'var __src=' + srcLiteral + ';var __type=' + navType + ';var __editType=' + editType + ';var __selectType=' + selectType + ';var __reorderType=' + reorderType + ';var __editModeType=' + editModeType + ';',
     'document.addEventListener("click",function(e){',
     'if(window.__mockswapTextEditEnabled)return;',
     'var t=e.target;while(t&&t.nodeType!==9&&t.nodeName!=="A"){t=t.parentNode;}',
@@ -326,26 +328,45 @@ export function augmentHtml(html: string, sourcePath: string): string {
     'e.preventDefault();e.stopPropagation();',
     'try{window.parent.postMessage({type:__type,href:h,sourceFile:__src},"*");}catch(_){}',
     '},true);',
-    // --- direct text editing bridge ---
+    // --- direct editing + reorder bridge ---
     'window.__mockswapTextEditEnabled=false;',
     'var textSelector="h1,h2,h3,h4,h5,h6,p,a,button,span,li,label,small,strong,em,figcaption,blockquote";',
-    'var selectableSelector=textSelector+",img";',
-    'function textTarget(node){var el=node&&node.nodeType===1?node:node&&node.parentElement;while(el&&el.nodeType===1){if(el.matches&&el.matches(textSelector)&&((el.textContent||"").trim()))return el;if(el===document.body)break;el=el.parentElement;}return null;}',
-    'function selectTarget(node){var el=node&&node.nodeType===1?node:node&&node.parentElement;while(el&&el.nodeType===1){if(el.matches&&el.matches("img"))return el;if(el.matches&&el.matches(textSelector)&&((el.textContent||"").trim()))return el;if(el===document.body)break;el=el.parentElement;}return null;}',
+    'var fieldSelector="input,textarea,select";',
+    'var selectableSelector=textSelector+",img,"+fieldSelector;',
+    'var __mockswapDragEl=null;var __mockswapDropEl=null;',
+    'function isField(el){return !!(el&&el.matches&&el.matches(fieldSelector));}',
+    'function isSelectable(el){return !!(el&&el.matches&&(el.matches("img")||el.matches(fieldSelector)||(el.matches(textSelector)&&clean(el.textContent))));}',
+    'function hasSource(el){return typeof numAttr(el,"data-mockswap-source-start")==="number"&&typeof numAttr(el,"data-mockswap-source-end")==="number";}',
+    'function textTarget(node){var el=node&&node.nodeType===1?node:node&&node.parentElement;while(el&&el.nodeType===1){if(!isField(el)&&el.matches&&el.matches(textSelector)&&clean(el.textContent))return el;if(el===document.body)break;el=el.parentElement;}return null;}',
+    'function selectTarget(node){var el=node&&node.nodeType===1?node:node&&node.parentElement;while(el&&el.nodeType===1){if(isSelectable(el))return el;if(el===document.body)break;el=el.parentElement;}return null;}',
     'function clean(value){return String(value||"").replace(/\\s+/g," ").trim();}',
     'function hint(el){var s=el.tagName.toLowerCase();if(el.id)s+="#"+el.id;if(el.className&&typeof el.className==="string")s+="."+el.className.trim().split(/\\s+/).slice(0,3).join(".");return s;}',
     'function baseName(value){value=String(value||"").split(/[?#]/)[0];var parts=value.split("/");return parts[parts.length-1]||value||"Image";}',
     'function numAttr(el,n){var v=el.getAttribute(n);if(v==null)return undefined;var x=Number(v);return Number.isFinite(x)?x:undefined;}',
-    'function selectElement(el){if(!el)return;var old=document.querySelector("[data-mockswap-selected]");if(old&&old!==el)old.removeAttribute("data-mockswap-selected");el.setAttribute("data-mockswap-selected","true");var isImage=el.tagName&&el.tagName.toLowerCase()==="img";var src=isImage?(el.getAttribute("src")||""):undefined;var text=isImage?undefined:clean(el.textContent);var label=isImage?((el.getAttribute("alt")||baseName(src)).trim()||"Image"):(text||el.tagName.toLowerCase());try{window.parent.postMessage({type:__selectType,sourceFile:__src,kind:isImage?"image":"text",tagName:el.tagName.toLowerCase(),label:label,text:text,src:src,alt:isImage?(el.getAttribute("alt")||""):undefined,href:el.getAttribute("href")||undefined,elementId:el.getAttribute("id")||undefined,className:typeof el.className==="string"?el.className:undefined,style:el.getAttribute("style")||"",sourceStart:numAttr(el,"data-mockswap-source-start"),sourceEnd:numAttr(el,"data-mockswap-source-end"),hasElementChildren:!!el.querySelector("*"),selectorHint:hint(el)},"*");}catch(_){}}',
-    'document.addEventListener("mouseover",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(el)el.setAttribute("data-mockswap-hover","true");},true);',
+    'function fieldLabel(el){var tag=el.tagName.toLowerCase();var type=el.getAttribute("type");var label=el.getAttribute("aria-label")||el.getAttribute("placeholder")||el.getAttribute("name")||el.getAttribute("id")||"";if(!label&&tag==="select"&&el.options&&el.selectedIndex>=0)label=el.options[el.selectedIndex].text||"";return clean(label)||(type?tag+"["+type+"]":tag);}',
+    'function elementLabel(el){var isImage=el.tagName&&el.tagName.toLowerCase()==="img";if(isImage){var src=el.getAttribute("src")||"";return clean(el.getAttribute("alt")||baseName(src))||"Image";}if(isField(el))return fieldLabel(el);return clean(el.textContent)||el.tagName.toLowerCase();}',
+    'function elementKind(el){if(el.tagName&&el.tagName.toLowerCase()==="img")return "image";if(isField(el))return "element";return "text";}',
+    'function reorderTarget(el){if(!el||!hasSource(el))return undefined;return{tagName:el.tagName.toLowerCase(),label:elementLabel(el),sourceStart:numAttr(el,"data-mockswap-source-start"),sourceEnd:numAttr(el,"data-mockswap-source-end"),selectorHint:hint(el)};}',
+    'function adjacentTarget(el,dir){if(!el||!el.parentElement)return undefined;var n=dir<0?el.previousElementSibling:el.nextElementSibling;while(n){if(isSelectable(n)&&hasSource(n))return reorderTarget(n);n=dir<0?n.previousElementSibling:n.nextElementSibling;}return undefined;}',
+    'function selectionPayload(el){var kind=elementKind(el);var isImage=kind==="image";var src=isImage?(el.getAttribute("src")||""):undefined;var text=kind==="text"?clean(el.textContent):undefined;var p=reorderTarget(el);if(!p)return null;p.sourceFile=__src;p.kind=kind;p.text=text;p.src=src;p.alt=isImage?(el.getAttribute("alt")||""):undefined;p.href=el.getAttribute("href")||undefined;p.elementId=el.getAttribute("id")||undefined;p.className=typeof el.className==="string"?el.className:undefined;p.style=el.getAttribute("style")||"";p.hasElementChildren=!!el.querySelector("*");p.moveBeforeTarget=adjacentTarget(el,-1);p.moveAfterTarget=adjacentTarget(el,1);return p;}',
+    'function syncDraggables(){var nodes=document.querySelectorAll(selectableSelector);for(var i=0;i<nodes.length;i++){var el=nodes[i];if(window.__mockswapTextEditEnabled&&isSelectable(el)&&hasSource(el))el.setAttribute("draggable","true");else el.removeAttribute("draggable");}}',
+    'function selectElement(el){if(!el)return;var old=document.querySelector("[data-mockswap-selected]");if(old&&old!==el)old.removeAttribute("data-mockswap-selected");el.setAttribute("data-mockswap-selected","true");var p=selectionPayload(el);if(!p)return;try{p.type=__selectType;window.parent.postMessage(p,"*");}catch(_){}}',
+    'document.addEventListener("mouseover",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(el){el.setAttribute("data-mockswap-hover","true");if(hasSource(el))el.setAttribute("draggable","true");}},true);',
     'document.addEventListener("mouseout",function(e){var el=e.target;if(el&&el.nodeType===1&&el.removeAttribute)el.removeAttribute("data-mockswap-hover");},true);',
     'document.addEventListener("click",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(!el)return;e.preventDefault();e.stopPropagation();selectElement(el);},true);',
     'function commit(el){if(!el||!el.__mockswapEditing)return;var oldText=el.__mockswapOldText||"";var nextText=clean(el.textContent);el.contentEditable="false";el.removeAttribute("data-mockswap-editing");el.__mockswapEditing=false;if(!nextText||nextText===oldText){el.textContent=oldText;return;}el.textContent=nextText;try{window.parent.postMessage({type:__editType,sourceFile:__src,oldText:oldText,newText:nextText,tagName:el.tagName.toLowerCase(),label:oldText,sourceStart:numAttr(el,"data-mockswap-source-start"),sourceEnd:numAttr(el,"data-mockswap-source-end"),selectorHint:hint(el)},"*");}catch(_){}}',
-    'window.addEventListener("message",function(e){var d=e.data;if(!d||typeof d!=="object"||d.type!==__editModeType)return;window.__mockswapTextEditEnabled=!!d.enabled;document.documentElement.toggleAttribute("data-mockswap-text-edit",window.__mockswapTextEditEnabled);if(!window.__mockswapTextEditEnabled){var editing=document.querySelector("[data-mockswap-editing]");if(editing)commit(editing);var selected=document.querySelector("[data-mockswap-selected]");if(selected)selected.removeAttribute("data-mockswap-selected");}});',
+    'function clearDropMarker(){if(__mockswapDropEl){__mockswapDropEl.removeAttribute("data-mockswap-drop-before");__mockswapDropEl.removeAttribute("data-mockswap-drop-after");}__mockswapDropEl=null;}',
+    'function validDrop(source,target){return !!(source&&target&&source!==target&&source.parentElement&&source.parentElement===target.parentElement&&hasSource(source)&&hasSource(target));}',
+    'function dropPlacement(target,e){var r=target.getBoundingClientRect();if(r.width>r.height*1.35)return e.clientX<r.left+r.width/2?"before":"after";return e.clientY<r.top+r.height/2?"before":"after";}',
+    'document.addEventListener("dragstart",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(!el||!hasSource(el))return;__mockswapDragEl=el;selectElement(el);el.setAttribute("data-mockswap-dragging","true");if(e.dataTransfer){e.dataTransfer.effectAllowed="move";try{e.dataTransfer.setData("text/plain",elementLabel(el));}catch(_){}}},true);',
+    'document.addEventListener("dragover",function(e){if(!window.__mockswapTextEditEnabled||!__mockswapDragEl)return;var target=selectTarget(e.target);if(!validDrop(__mockswapDragEl,target))return;e.preventDefault();if(e.dataTransfer)e.dataTransfer.dropEffect="move";var placement=dropPlacement(target,e);if(__mockswapDropEl&&__mockswapDropEl!==target)clearDropMarker();__mockswapDropEl=target;target.removeAttribute("data-mockswap-drop-before");target.removeAttribute("data-mockswap-drop-after");target.setAttribute(placement==="before"?"data-mockswap-drop-before":"data-mockswap-drop-after","true");},true);',
+    'document.addEventListener("drop",function(e){if(!window.__mockswapTextEditEnabled||!__mockswapDragEl)return;var target=selectTarget(e.target);if(!validDrop(__mockswapDragEl,target))return;e.preventDefault();e.stopPropagation();var placement=dropPlacement(target,e);var selection=selectionPayload(__mockswapDragEl);var reference=reorderTarget(target);clearDropMarker();try{window.parent.postMessage({type:__reorderType,sourceFile:__src,selection:selection,reference:reference,placement:placement},"*");}catch(_){}},true);',
+    'document.addEventListener("dragend",function(){if(__mockswapDragEl)__mockswapDragEl.removeAttribute("data-mockswap-dragging");__mockswapDragEl=null;clearDropMarker();},true);',
+    'window.addEventListener("message",function(e){var d=e.data;if(!d||typeof d!=="object"||d.type!==__editModeType)return;window.__mockswapTextEditEnabled=!!d.enabled;document.documentElement.toggleAttribute("data-mockswap-text-edit",window.__mockswapTextEditEnabled);syncDraggables();if(!window.__mockswapTextEditEnabled){var editing=document.querySelector("[data-mockswap-editing]");if(editing)commit(editing);var selected=document.querySelector("[data-mockswap-selected]");if(selected)selected.removeAttribute("data-mockswap-selected");if(__mockswapDragEl)__mockswapDragEl.removeAttribute("data-mockswap-dragging");__mockswapDragEl=null;clearDropMarker();}});',
     'document.addEventListener("dblclick",function(e){if(!window.__mockswapTextEditEnabled)return;var el=textTarget(e.target);if(!el)return;e.preventDefault();e.stopPropagation();var active=document.querySelector("[data-mockswap-editing]");if(active&&active!==el)commit(active);el.__mockswapOldText=clean(el.textContent);if(!el.__mockswapOldText)return;el.__mockswapEditing=true;el.setAttribute("data-mockswap-editing","true");el.contentEditable="true";el.focus();try{var r=document.createRange();r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}catch(_){}},true);',
     'document.addEventListener("focusout",function(e){var el=e.target;if(el&&el.__mockswapEditing)setTimeout(function(){commit(el);},0);},true);',
     'document.addEventListener("keydown",function(e){var el=e.target;if(!el||!el.__mockswapEditing)return;if(e.key==="Escape"){e.preventDefault();el.textContent=el.__mockswapOldText||"";commit(el);}else if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();commit(el);}},true);',
-    'try{var st=document.createElement("style");st.setAttribute("data-mockswap-edit-style","");st.textContent="html[data-mockswap-text-edit] "+selectableSelector.split(",").join(",html[data-mockswap-text-edit] ")+"{cursor:crosshair!important} [data-mockswap-hover]{outline:1px dashed #a78bfa!important;outline-offset:2px!important} [data-mockswap-selected],[data-mockswap-editing]{outline:2px solid #8b5cf6!important;outline-offset:2px!important;box-shadow:0 0 0 4px rgba(139,92,246,.18)!important}";document.head&&document.head.appendChild(st);}catch(_){}',
+    'try{var st=document.createElement("style");st.setAttribute("data-mockswap-edit-style","");st.textContent="html[data-mockswap-text-edit] "+selectableSelector.split(",").join(",html[data-mockswap-text-edit] ")+"{cursor:crosshair!important} html[data-mockswap-text-edit] [draggable=true]{cursor:grab!important} [data-mockswap-hover]{outline:1px dashed #a78bfa!important;outline-offset:2px!important} [data-mockswap-selected],[data-mockswap-editing]{outline:2px solid #8b5cf6!important;outline-offset:2px!important;box-shadow:0 0 0 4px rgba(139,92,246,.18)!important} [data-mockswap-dragging]{opacity:.55!important} [data-mockswap-drop-before]{box-shadow:inset 0 3px 0 #22d3ee,0 0 0 4px rgba(34,211,238,.18)!important} [data-mockswap-drop-after]{box-shadow:inset 0 -3px 0 #22d3ee,0 0 0 4px rgba(34,211,238,.18)!important}";document.head&&document.head.appendChild(st);}catch(_){}',
     '})();',
   ].join('');
 
@@ -361,6 +382,7 @@ const EDITABLE_SOURCE_TAGS = new Set([
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'p', 'a', 'button', 'span', 'li', 'label', 'small',
   'strong', 'em', 'figcaption', 'blockquote', 'img',
+  'input', 'textarea', 'select',
 ]);
 
 const RAW_TEXT_TAGS = new Set(['script', 'style', 'textarea']);
@@ -387,14 +409,6 @@ export function instrumentEditableMarkup(html: string): string {
       continue;
     }
 
-    if (!tag.closing && RAW_TEXT_TAGS.has(tag.name)) {
-      const closeRe = new RegExp(`</\\s*${tag.name}\\s*>`, 'i');
-      const rest = html.slice(tag.end);
-      const close = rest.search(closeRe);
-      index = close === -1 ? tag.end : tag.end + close + rest.slice(close).match(closeRe)![0].length;
-      continue;
-    }
-
     if (!tag.closing && EDITABLE_SOURCE_TAGS.has(tag.name)) {
       const raw = html.slice(tag.start, tag.end);
       if (!/\sdata-mockswap-source-start\s*=/.test(raw)) {
@@ -402,6 +416,14 @@ export function instrumentEditableMarkup(html: string): string {
         out += ` data-mockswap-source-start="${tag.start}" data-mockswap-source-end="${tag.end}"`;
         cursor = tag.insertAt;
       }
+    }
+
+    if (!tag.closing && RAW_TEXT_TAGS.has(tag.name)) {
+      const closeRe = new RegExp(`</\\s*${tag.name}\\s*>`, 'i');
+      const rest = html.slice(tag.end);
+      const close = rest.search(closeRe);
+      index = close === -1 ? tag.end : tag.end + close + rest.slice(close).match(closeRe)![0].length;
+      continue;
     }
 
     index = tag.end;

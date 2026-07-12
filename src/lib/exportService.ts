@@ -406,6 +406,28 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
     }
   }
 
+  const editorReorderPatches = patches.filter(
+    (p): p is Extract<AppliedPatch, { action: 'editor-reorder' }> =>
+      p.action === 'editor-reorder',
+  ).sort((a, b) => b.appliedAt - a.appliedAt);
+  if (editorReorderPatches.length > 0) {
+    lines.push('## Direct editor reorders', '');
+    lines.push(
+      `${editorReorderPatches.length} element reorder${editorReorderPatches.length === 1 ? '' : 's'} applied from the live preview. These move source-backed elements among same-parent siblings so the exported HTML matches the edited order.`,
+      '',
+    );
+    for (const p of editorReorderPatches) {
+      const at = new Date(p.appliedAt).toISOString();
+      const target = p.target.selectorHint ?? p.target.label;
+      const reference = p.reference.selectorHint ?? p.reference.label;
+      lines.push(`### \`${p.sourceFile}\``, '');
+      lines.push(`- **Moved**: \`${target}\` (${p.target.tagName})`);
+      lines.push(`- **Placement**: ${p.placement} \`${reference}\` (${p.reference.tagName})`);
+      lines.push(`- **Applied at**: ${at}`);
+      lines.push('');
+    }
+  }
+
   // Manual Replacements section. Pulled BEFORE Logo Helper because the
   // audit audience reads \"what the user manually rewrote\" before the
   // \"what the Logo Helper bulk-applied\". A single manual-replace patch

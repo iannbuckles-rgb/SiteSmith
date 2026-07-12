@@ -24,7 +24,15 @@ export type PreviewViewport = 'mobile' | 'tablet' | 'desktop' | 'full';
  * interactive; editor turns clicks into element selection + mutation events. */
 export type PreviewMode = 'preview' | 'editor';
 
-export type EditorSelectionKind = 'text' | 'image';
+export type EditorSelectionKind = 'text' | 'image' | 'element';
+
+export interface EditorReorderTarget {
+  tagName: string;
+  label: string;
+  sourceStart?: number;
+  sourceEnd?: number;
+  selectorHint?: string;
+}
 
 export interface EditorSelection {
   sourceFile: string;
@@ -42,6 +50,8 @@ export interface EditorSelection {
   alt?: string;
   href?: string;
   selectorHint?: string;
+  moveBeforeTarget?: EditorReorderTarget;
+  moveAfterTarget?: EditorReorderTarget;
 }
 
 /** Per-viewport dimension table backing `mobile` / `tablet` / `desktop`.

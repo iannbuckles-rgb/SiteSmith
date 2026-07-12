@@ -326,7 +326,7 @@ export type AppliedPatch =
       action: 'editor-edit';
       sourceFile: string;
       target: {
-        kind: 'text' | 'image';
+        kind: 'text' | 'image' | 'element';
         tagName: string;
         label: string;
         selectorHint?: string;
@@ -334,6 +334,30 @@ export type AppliedPatch =
         sourceEnd?: number;
       };
       edits: EditorAppliedEdit[];
+      appliedAt: number;
+      previousSourceText: string;
+      currentSourceText: string;
+    }
+  | {
+      id: string;
+      action: 'editor-reorder';
+      sourceFile: string;
+      target: {
+        kind: 'text' | 'image' | 'element';
+        tagName: string;
+        label: string;
+        selectorHint?: string;
+        sourceStart?: number;
+        sourceEnd?: number;
+      };
+      reference: {
+        tagName: string;
+        label: string;
+        selectorHint?: string;
+        sourceStart?: number;
+        sourceEnd?: number;
+      };
+      placement: 'before' | 'after';
       appliedAt: number;
       previousSourceText: string;
       currentSourceText: string;

@@ -70,7 +70,7 @@ export function ChangeHistoryPanel({
     <div className="flex h-full min-h-0 flex-col gap-3" data-testid="history-panel">
       <Toolbar
         canUndoLast={sorted.length > 0}
-        canResetSelected={hasSelectedDetection && sorted.some((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit')}
+        canResetSelected={hasSelectedDetection && sorted.some((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder')}
         onUndoLastChange={onUndoLastChange}
         onUndoAll={onUndoAll}
         onResetSelectedImage={onResetSelectedImage}
@@ -382,7 +382,7 @@ function HistoryRow({ patch, onUndo }: HistoryRowProps) {
  * others in the meta.extra string — they don't all fit on one diff card).
  */
 function sourceTextPairFor(patch: AppliedPatch): { before: string; after: string } | null {
-  if (patch.action === 'replace' || patch.action === 'fit-style' || patch.action === 'remove' || patch.action === 'placeholder' || patch.action === 'editor-edit') {
+  if (patch.action === 'replace' || patch.action === 'fit-style' || patch.action === 'remove' || patch.action === 'placeholder' || patch.action === 'editor-edit' || patch.action === 'editor-reorder') {
     return { before: patch.previousSourceText, after: patch.currentSourceText };
   }
   if (patch.action === 'manual-replace' && patch.modifiedFiles.length > 0) {
@@ -477,6 +477,15 @@ function describePatch(patch: AppliedPatch): PatchMeta {
         extra: `${patch.target.selectorHint ?? patch.target.tagName} · ${patch.edits.length} field${patch.edits.length === 1 ? '' : 's'}`,
       };
     }
+    case 'editor-reorder':
+      return {
+        actionType: 'Editor reorder',
+        actionTone: 'border-cyan-700/40 bg-cyan-950/30 text-cyan-200',
+        file: patch.sourceFile,
+        oldPath: patch.target.selectorHint ?? patch.target.label,
+        newPath: `${patch.placement} ${patch.reference.selectorHint ?? patch.reference.label}`,
+        extra: `${patch.target.tagName} moved ${patch.placement} ${patch.reference.tagName}`,
+      };
   }
 }
 

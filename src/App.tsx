@@ -12,11 +12,11 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { LeftPanel } from './components/LeftPanel';
 import type { LogoHelperSuccessSummary } from './components/LogoHelperPanel';
 import { RightPanel } from './components/RightPanel';
-import type { EditorSelection, PreviewHistoryState, PreviewMode, PreviewViewport } from './lib/previewControls';
+import type { EditorReorderTarget, EditorSelection, PreviewHistoryState, PreviewMode, PreviewViewport } from './lib/previewControls';
 import { applyPlaceholder, applyRemove, applyReplacement } from './lib/assetReplacer';
 import { bulkReplace } from './lib/bulkReplace';
 import { createAbortError, isAbortError, throwIfAborted } from './lib/cancellation';
-import { applyEditorEdit } from './lib/editorPatch';
+import { applyEditorEdit, applyEditorReorder } from './lib/editorPatch';
 import { applyFitStyleToCss, applyFitStyleToImg } from './lib/fitStyles';
 import {
   clearSession,
@@ -70,6 +70,7 @@ const THUMBNAIL_CAP = 60;
 const NAV_MESSAGE_TYPE = 'mockswap:navigate';
 const TEXT_EDIT_MESSAGE_TYPE = 'mockswap:text-edit';
 const SELECT_MESSAGE_TYPE = 'mockswap:select-element';
+const REORDER_MESSAGE_TYPE = 'mockswap:reorder-element';
 
 /** Save-to-IndexedDB debounce window. Big zips take ~60–80 ms to blob; we
  *  batch rapid mutations (chip clicks, typed searches) so 1 s is safe. */
@@ -453,7 +454,7 @@ export default function App() {
     const rawUrl = selectedDetectionKey.slice(sep + 1);
     let best: AppliedPatch | null = null;
     for (const p of patchesByKey.values()) {
-      if (p.action === 'manual-replace' || p.action === 'editor-edit') continue;
+      if (p.action === 'manual-replace' || p.action === 'editor-edit' || p.action === 'editor-reorder') continue;
       if (p.sourceFile !== sourceFile || p.rawUrl !== rawUrl) continue;
       if (!best || p.appliedAt > best.appliedAt) best = p;
     }
@@ -1450,7 +1451,7 @@ export default function App() {
     // cascade logic, so users who want to undo them should reach for
     // that path or "Undo Last Change".
     const related = Array.from(patchesByKey.values())
-      .filter((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit')
+      .filter((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder')
       .filter((p) => p.id === baseId || p.id.startsWith(baseId + '#'))
       .sort((a, b) => b.appliedAt - a.appliedAt);
     if (related.length === 0) {
@@ -1505,8 +1506,8 @@ export default function App() {
 
   const handleReplaceAgain = useCallback(() => {
     const ref = selectedDetection ?? (selectedAppliedPatch as AppliedPatch | null);
-    if (ref && !('action' in ref && (ref.action === 'manual-replace' || ref.action === 'editor-edit'))) {
-      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' | 'editor-edit' }>>;
+    if (ref && !('action' in ref && (ref.action === 'manual-replace' || ref.action === 'editor-edit' || ref.action === 'editor-reorder'))) {
+      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' | 'editor-edit' | 'editor-reorder' }>>;
       const id = `${refAsDetection.sourceFile}::${refAsDetection.sourceTag}::${refAsDetection.sourceAttr}::${refAsDetection.rawUrl}`;
       handleUndoPatchById(id);
       handleUndoPatchById(`${id}#fit`);
@@ -1950,6 +1951,59 @@ export default function App() {
     }
   }, [project, editorBusy, editorSelection, patchesByKey, pushToast]);
 
+  const handleApplyEditorReorder = useCallback(async (
+    selection: EditorSelection,
+    reference: EditorReorderTarget,
+    placement: 'before' | 'after',
+  ) => {
+    if (!project || editorBusy) return;
+    if (!project.entries.some((entry) => !entry.isDirectory && entry.path === selection.sourceFile)) return;
+    setEditorBusy(true);
+    setEditorError(null);
+    try {
+      const patch = await applyEditorReorder(project, {
+        selection,
+        reference,
+        placement,
+      });
+      setPatchesByKey((map) => {
+        const next = new Map(map);
+        next.set(patch.id, patch);
+        return next;
+      });
+      setEditorSelection(null);
+      setPreviewRevision((r) => r + 1);
+      setPreviewKey((k) => k + 1);
+      setExportState('idle');
+      setExportSummary(null);
+      setExportError(null);
+      pushToast({
+        kind: 'success',
+        title: 'Editor element reordered',
+        detail: `${selection.sourceFile} changed and is ready to export.`,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setEditorError(detail);
+      setPreviewKey((k) => k + 1);
+      pushToast({
+        kind: 'warning',
+        title: "Couldn't reorder selected element",
+        detail,
+      });
+    } finally {
+      setEditorBusy(false);
+    }
+  }, [project, editorBusy, pushToast]);
+
+  const handleMoveEditorSelection = useCallback((
+    placement: 'before' | 'after',
+    reference: EditorReorderTarget,
+  ) => {
+    if (!editorSelection) return;
+    void handleApplyEditorReorder(editorSelection, reference, placement);
+  }, [editorSelection, handleApplyEditorReorder]);
+
   // ------------------------------------------------------------------------
   // Bulk replace handlers
   // ------------------------------------------------------------------------
@@ -2330,7 +2384,7 @@ export default function App() {
         const payload = data as Partial<EditorSelection>;
         if (
           payload &&
-          (payload.kind === 'text' || payload.kind === 'image') &&
+          (payload.kind === 'text' || payload.kind === 'image' || payload.kind === 'element') &&
           typeof payload.sourceFile === 'string' &&
           typeof payload.tagName === 'string' &&
           typeof payload.label === 'string'
@@ -2351,6 +2405,8 @@ export default function App() {
             sourceEnd: typeof payload.sourceEnd === 'number' ? payload.sourceEnd : undefined,
             hasElementChildren: typeof payload.hasElementChildren === 'boolean' ? payload.hasElementChildren : undefined,
             selectorHint: typeof payload.selectorHint === 'string' ? payload.selectorHint : undefined,
+            moveBeforeTarget: readEditorReorderTarget(payload.moveBeforeTarget),
+            moveAfterTarget: readEditorReorderTarget(payload.moveAfterTarget),
           });
           setEditorError(null);
           setActiveMobilePane('right');
@@ -2387,6 +2443,24 @@ export default function App() {
         }
         return;
       }
+      if (type === REORDER_MESSAGE_TYPE) {
+        const payload = data as {
+          sourceFile?: unknown;
+          selection?: unknown;
+          reference?: unknown;
+          placement?: unknown;
+        };
+        const selection = readEditorSelection(payload.selection, payload.sourceFile);
+        const reference = readEditorReorderTarget(payload.reference);
+        if (
+          selection &&
+          reference &&
+          (payload.placement === 'before' || payload.placement === 'after')
+        ) {
+          void handleApplyEditorReorder(selection, reference, payload.placement);
+        }
+        return;
+      }
       if (type !== NAV_MESSAGE_TYPE) return;
       const href = (data as { href?: unknown }).href;
       const sourceFile = (data as { sourceFile?: unknown }).sourceFile;
@@ -2406,7 +2480,7 @@ export default function App() {
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [navigateToPage, handleApplyPreviewTextEdit]);
+  }, [navigateToPage, handleApplyPreviewTextEdit, handleApplyEditorReorder]);
 
   useEffect(() => {
     if (!rightDrawerOpen) return;
@@ -2628,6 +2702,7 @@ export default function App() {
               onApplyEditorText={(value) => void handleApplyEditorText(value)}
               onApplyEditorField={(field, value) => void handleApplyEditorField(field, value)}
               onApplyEditorImageFile={(file) => void handleApplyEditorImageFile(file)}
+              onMoveEditorSelection={handleMoveEditorSelection}
               onClearEditorSelection={handleClearEditorSelection}
             />
           </div>
@@ -3047,6 +3122,53 @@ function isAppliedPatch(value: unknown): value is AppliedPatch {
   return isObjectRecord(value)
     && typeof value.id === 'string'
     && typeof value.action === 'string';
+}
+
+function readEditorSelection(value: unknown, sourceFileHint: unknown): EditorSelection | null {
+  if (!isObjectRecord(value)) return null;
+  const kind = value.kind;
+  const sourceFile = typeof value.sourceFile === 'string'
+    ? value.sourceFile
+    : typeof sourceFileHint === 'string'
+      ? sourceFileHint
+      : null;
+  if (
+    sourceFile === null ||
+    (kind !== 'text' && kind !== 'image' && kind !== 'element') ||
+    typeof value.tagName !== 'string' ||
+    typeof value.label !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    sourceFile,
+    kind,
+    tagName: value.tagName,
+    label: value.label,
+    text: typeof value.text === 'string' ? value.text : undefined,
+    src: typeof value.src === 'string' ? value.src : undefined,
+    alt: typeof value.alt === 'string' ? value.alt : undefined,
+    href: typeof value.href === 'string' ? value.href : undefined,
+    elementId: typeof value.elementId === 'string' ? value.elementId : undefined,
+    className: typeof value.className === 'string' ? value.className : undefined,
+    style: typeof value.style === 'string' ? value.style : undefined,
+    sourceStart: typeof value.sourceStart === 'number' ? value.sourceStart : undefined,
+    sourceEnd: typeof value.sourceEnd === 'number' ? value.sourceEnd : undefined,
+    hasElementChildren: typeof value.hasElementChildren === 'boolean' ? value.hasElementChildren : undefined,
+    selectorHint: typeof value.selectorHint === 'string' ? value.selectorHint : undefined,
+  };
+}
+
+function readEditorReorderTarget(value: unknown): EditorReorderTarget | undefined {
+  if (!isObjectRecord(value)) return undefined;
+  if (typeof value.tagName !== 'string' || typeof value.label !== 'string') return undefined;
+  return {
+    tagName: value.tagName,
+    label: value.label,
+    sourceStart: typeof value.sourceStart === 'number' ? value.sourceStart : undefined,
+    sourceEnd: typeof value.sourceEnd === 'number' ? value.sourceEnd : undefined,
+    selectorHint: typeof value.selectorHint === 'string' ? value.selectorHint : undefined,
+  };
 }
 
 type EditableEditorField = Exclude<EditorEditField, 'text'>;

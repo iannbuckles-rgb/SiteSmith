@@ -24,7 +24,7 @@ import type {
   ImageDetection,
   ImageFitConfig,
 } from '../types';
-import type { EditorSelection, PreviewMode } from '../lib/previewControls';
+import type { EditorReorderTarget, EditorSelection, PreviewMode } from '../lib/previewControls';
 
 /** What the right panel is currently configured to do with the selected
  *  detection. The user toggles among these with chips in the section. */
@@ -76,6 +76,7 @@ interface RightPanelProps {
   onApplyEditorText: (value: string) => void;
   onApplyEditorField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
   onApplyEditorImageFile: (file: File) => void;
+  onMoveEditorSelection: (placement: 'before' | 'after', reference: EditorReorderTarget) => void;
   onClearEditorSelection: () => void;
   exportState: ExportState;
   exportSummary: ExportSummary | null;
@@ -99,7 +100,7 @@ export function RightPanel({
   onApplyFitStyle, onResetFitStyle,
   webpReencodeEnabled, onToggleWebpReencode,
   mode, editorSelection, editorBusy, editorError,
-  onApplyEditorText, onApplyEditorField, onApplyEditorImageFile, onClearEditorSelection,
+  onApplyEditorText, onApplyEditorField, onApplyEditorImageFile, onMoveEditorSelection, onClearEditorSelection,
   exportState, exportSummary, exportError, canExport, onExport, onExportAgain,
 }: RightPanelProps) {
   const broken = selectedDetection ? isBroken(selectedDetection) : false;
@@ -117,6 +118,7 @@ export function RightPanel({
           onApplyText={onApplyEditorText}
           onApplyField={onApplyEditorField}
           onApplyImageFile={onApplyEditorImageFile}
+          onMove={onMoveEditorSelection}
           onClear={onClearEditorSelection}
         />
       ) : (
@@ -213,6 +215,7 @@ interface EditorInspectorProps {
   onApplyText: (value: string) => void;
   onApplyField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
   onApplyImageFile: (file: File) => void;
+  onMove: (placement: 'before' | 'after', reference: EditorReorderTarget) => void;
   onClear: () => void;
 }
 
@@ -223,6 +226,7 @@ function EditorInspector({
   onApplyText,
   onApplyField,
   onApplyImageFile,
+  onMove,
   onClear,
 }: EditorInspectorProps) {
   const [textDraft, setTextDraft] = useState('');
@@ -259,7 +263,7 @@ function EditorInspector({
             Editor
           </h3>
           <p className="mt-1 text-xs text-zinc-400">
-            {selection ? 'Selected element' : 'Click text, buttons, links, or images in the page.'}
+            {selection ? 'Selected element' : 'Click text, buttons, fields, links, or images in the page.'}
           </p>
         </div>
         {selection && (
@@ -285,6 +289,38 @@ function EditorInspector({
             <Field label="Element" value={selection.selectorHint ?? selection.tagName} mono />
             <Field label="File" value={selection.sourceFile} title={selection.sourceFile} mono />
           </dl>
+
+          {(selection.moveBeforeTarget || selection.moveAfterTarget) && (
+            <div className="space-y-2 border-t border-zinc-800 pt-3" data-testid="editor-reorder-controls">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                Order
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => selection.moveBeforeTarget && onMove('before', selection.moveBeforeTarget)}
+                  disabled={busy || !selection.moveBeforeTarget}
+                  title={selection.moveBeforeTarget ? `Move before ${selection.moveBeforeTarget.label}` : 'No previous sibling'}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="editor-move-earlier"
+                >
+                  <ArrowUpIcon />
+                  Earlier
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selection.moveAfterTarget && onMove('after', selection.moveAfterTarget)}
+                  disabled={busy || !selection.moveAfterTarget}
+                  title={selection.moveAfterTarget ? `Move after ${selection.moveAfterTarget.label}` : 'No next sibling'}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="editor-move-later"
+                >
+                  <ArrowDownIcon />
+                  Later
+                </button>
+              </div>
+            </div>
+          )}
 
           {selection.kind === 'text' ? (
             <div className="space-y-3" data-testid="editor-text-controls">
@@ -321,7 +357,7 @@ function EditorInspector({
                 />
               )}
             </div>
-          ) : (
+          ) : selection.kind === 'image' ? (
             <div className="space-y-3" data-testid="editor-image-controls">
               <EditorInputControl
                 label="Image source"
@@ -360,7 +396,7 @@ function EditorInspector({
                 testId="editor-image-alt"
               />
             </div>
-          )}
+          ) : null}
 
           <div className="space-y-3 border-t border-zinc-800 pt-3" data-testid="editor-advanced-controls">
             <EditorInputControl
@@ -457,6 +493,24 @@ function EditorInputControl({
         Apply {label.toLowerCase()}
       </button>
     </div>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M12 19V5" />
+      <path d="M6 11l6-6 6 6" />
+    </svg>
+  );
+}
+
+function ArrowDownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M12 5v14" />
+      <path d="M18 13l-6 6-6-6" />
+    </svg>
   );
 }
 
