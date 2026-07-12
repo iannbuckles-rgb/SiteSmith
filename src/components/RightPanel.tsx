@@ -77,6 +77,7 @@ interface RightPanelProps {
   onApplyEditorField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
   onApplyEditorImageFile: (file: File) => void;
   onMoveEditorSelection: (placement: 'before' | 'after', reference: EditorReorderTarget) => void;
+  onDeleteEditorSelection: () => void;
   onClearEditorSelection: () => void;
   exportState: ExportState;
   exportSummary: ExportSummary | null;
@@ -100,7 +101,7 @@ export function RightPanel({
   onApplyFitStyle, onResetFitStyle,
   webpReencodeEnabled, onToggleWebpReencode,
   mode, editorSelection, editorBusy, editorError,
-  onApplyEditorText, onApplyEditorField, onApplyEditorImageFile, onMoveEditorSelection, onClearEditorSelection,
+  onApplyEditorText, onApplyEditorField, onApplyEditorImageFile, onMoveEditorSelection, onDeleteEditorSelection, onClearEditorSelection,
   exportState, exportSummary, exportError, canExport, onExport, onExportAgain,
 }: RightPanelProps) {
   const broken = selectedDetection ? isBroken(selectedDetection) : false;
@@ -119,6 +120,7 @@ export function RightPanel({
           onApplyField={onApplyEditorField}
           onApplyImageFile={onApplyEditorImageFile}
           onMove={onMoveEditorSelection}
+          onDelete={onDeleteEditorSelection}
           onClear={onClearEditorSelection}
         />
       ) : (
@@ -216,6 +218,7 @@ interface EditorInspectorProps {
   onApplyField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
   onApplyImageFile: (file: File) => void;
   onMove: (placement: 'before' | 'after', reference: EditorReorderTarget) => void;
+  onDelete: () => void;
   onClear: () => void;
 }
 
@@ -227,6 +230,7 @@ function EditorInspector({
   onApplyField,
   onApplyImageFile,
   onMove,
+  onDelete,
   onClear,
 }: EditorInspectorProps) {
   const [textDraft, setTextDraft] = useState('');
@@ -290,6 +294,18 @@ function EditorInspector({
             <Field label="File" value={selection.sourceFile} title={selection.sourceFile} mono />
           </dl>
 
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy}
+            aria-busy={busy}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-rose-700/60 bg-rose-950/40 px-3 py-2 text-xs font-medium text-rose-200 transition-colors hover:border-rose-400 hover:bg-rose-500/15 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="editor-delete-selection"
+          >
+            <TrashIcon />
+            Delete selected
+          </button>
+
           {(selection.moveBeforeTarget || selection.moveAfterTarget) && (
             <div className="space-y-2 border-t border-zinc-800 pt-3" data-testid="editor-reorder-controls">
               <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
@@ -300,7 +316,7 @@ function EditorInspector({
                   type="button"
                   onClick={() => selection.moveBeforeTarget && onMove('before', selection.moveBeforeTarget)}
                   disabled={busy || !selection.moveBeforeTarget}
-                  title={selection.moveBeforeTarget ? `Move before ${selection.moveBeforeTarget.label}` : 'No previous sibling'}
+                  title={selection.moveBeforeTarget ? `Move before ${selection.moveBeforeTarget.label} (ArrowUp or ArrowLeft)` : 'No previous sibling'}
                   className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
                   data-testid="editor-move-earlier"
                 >
@@ -311,7 +327,7 @@ function EditorInspector({
                   type="button"
                   onClick={() => selection.moveAfterTarget && onMove('after', selection.moveAfterTarget)}
                   disabled={busy || !selection.moveAfterTarget}
-                  title={selection.moveAfterTarget ? `Move after ${selection.moveAfterTarget.label}` : 'No next sibling'}
+                  title={selection.moveAfterTarget ? `Move after ${selection.moveAfterTarget.label} (ArrowDown or ArrowRight)` : 'No next sibling'}
                   className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
                   data-testid="editor-move-later"
                 >
@@ -510,6 +526,18 @@ function ArrowDownIcon() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
       <path d="M12 5v14" />
       <path d="M18 13l-6 6-6-6" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+      <path d="M10 11v5" />
+      <path d="M14 11v5" />
     </svg>
   );
 }

@@ -361,6 +361,23 @@ export type AppliedPatch =
       appliedAt: number;
       previousSourceText: string;
       currentSourceText: string;
+    }
+  | {
+      id: string;
+      action: 'editor-delete';
+      sourceFile: string;
+      target: {
+        kind: 'text' | 'image' | 'element';
+        tagName: string;
+        label: string;
+        selectorHint?: string;
+        sourceStart?: number;
+        sourceEnd?: number;
+      };
+      removedSourceText: string;
+      appliedAt: number;
+      previousSourceText: string;
+      currentSourceText: string;
     };
 
 /* ----------------------------------------------------------------------------

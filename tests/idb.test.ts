@@ -84,12 +84,19 @@ describe('idb project records', () => {
     await expect(project?.mutatedZipBlob?.text()).resolves.toBe('project-1-mutated');
   });
 
-  it('deletes project records', async () => {
+  it('deletes project records and their checkpoints', async () => {
     await saveProjectRecord(makeProject({ id: 'project-1' }));
+    await saveCheckpoint(makeCheckpoint({ id: 'checkpoint-1', projectId: 'project-1' }));
+    await saveCheckpoint(makeCheckpoint({ id: 'checkpoint-2', projectId: 'project-1' }));
+    await saveCheckpoint(makeCheckpoint({ id: 'checkpoint-other', projectId: 'project-2' }));
 
     await deleteProjectRecord('project-1');
 
     await expect(loadProjectRecord('project-1')).resolves.toBeNull();
+    await expect(listCheckpoints('project-1')).resolves.toEqual([]);
+    await expect(loadCheckpoint('checkpoint-1')).resolves.toBeNull();
+    await expect(loadCheckpoint('checkpoint-2')).resolves.toBeNull();
+    await expect(loadCheckpoint('checkpoint-other')).resolves.toMatchObject({ id: 'checkpoint-other' });
   });
 
   it('creates the checkpoints store and projectId index during v3 upgrade', async () => {
@@ -297,10 +304,15 @@ class FakeDatabase {
     return new FakeObjectStore(store, null) as unknown as IDBObjectStore;
   }
 
-  transaction(storeName: string): IDBTransaction {
-    const store = this.database.stores.get(storeName);
-    if (!store) throw new DOMException(`Missing object store: ${storeName}`, 'NotFoundError');
-    return new FakeTransaction(store) as unknown as IDBTransaction;
+  transaction(storeNames: string | string[]): IDBTransaction {
+    const names = Array.isArray(storeNames) ? storeNames : [storeNames];
+    const stores = new Map<string, FakeStoreState>();
+    for (const storeName of names) {
+      const store = this.database.stores.get(storeName);
+      if (!store) throw new DOMException(`Missing object store: ${storeName}`, 'NotFoundError');
+      stores.set(storeName, store);
+    }
+    return new FakeTransaction(stores) as unknown as IDBTransaction;
   }
 
   close(): void {
@@ -314,10 +326,16 @@ class FakeTransaction {
   onerror: ((this: IDBTransaction, ev: Event) => unknown) | null = null;
   onabort: ((this: IDBTransaction, ev: Event) => unknown) | null = null;
 
-  constructor(private readonly store: FakeStoreState) {}
+  constructor(private readonly stores: Map<string, FakeStoreState>) {}
 
-  objectStore(): IDBObjectStore {
-    return new FakeObjectStore(this.store, this) as unknown as IDBObjectStore;
+  objectStore(storeName?: string): IDBObjectStore {
+    const store = storeName
+      ? this.stores.get(storeName)
+      : this.stores.size === 1
+        ? Array.from(this.stores.values())[0]
+        : undefined;
+    if (!store) throw new DOMException(`Missing object store: ${storeName ?? ''}`, 'NotFoundError');
+    return new FakeObjectStore(store, this) as unknown as IDBObjectStore;
   }
 
   completeSoon(): void {

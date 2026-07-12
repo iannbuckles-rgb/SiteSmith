@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyEditorEdit, applyEditorReorder } from '../src/lib/editorPatch';
+import { applyEditorDelete, applyEditorEdit, applyEditorReorder } from '../src/lib/editorPatch';
 import { buildReport } from '../src/lib/exportService';
 import { undoPatchById } from '../src/lib/undoStack';
 import type { EditorSelection } from '../src/lib/previewControls';
@@ -165,5 +165,55 @@ describe('applyEditorReorder', () => {
     expect(report).toContain('Direct editor reorders');
     expect(report).toContain('Placement');
     expect(report).toContain('before `label`');
+  });
+});
+
+describe('applyEditorDelete', () => {
+  it('deletes the selected duplicate element by source range and undo restores it', async () => {
+    const source = '<main>\n  <button>Keep</button>\n  <button>Delete</button>\n</main>';
+    const deleteStart = source.lastIndexOf('<button>');
+    const deleteEnd = deleteStart + '<button>'.length;
+    const project = makeProject({ 'index.html': source });
+
+    const patch = await applyEditorDelete(project, {
+      sourceFile: 'index.html',
+      kind: 'text',
+      tagName: 'button',
+      label: 'Delete',
+      text: 'Delete',
+      sourceStart: deleteStart,
+      sourceEnd: deleteEnd,
+      selectorHint: 'button',
+    });
+
+    expect(patch.action).toBe('editor-delete');
+    expect(patch.removedSourceText).toContain('<button>Delete</button>');
+    expect(await zipText(project, 'index.html')).toBe('<main>\n  <button>Keep</button>\n</main>');
+
+    undoPatchById(project, patch);
+    expect(await zipText(project, 'index.html')).toBe(source);
+  });
+
+  it('deletes a source-backed component and reports it in the export audit', async () => {
+    const source = '<main><section class="hero"><h1>Hero</h1></section><section>Keep</section></main>';
+    const sectionStart = source.indexOf('<section class="hero"');
+    const project = makeProject({ 'index.html': source });
+
+    const patch = await applyEditorDelete(project, {
+      sourceFile: 'index.html',
+      kind: 'element',
+      tagName: 'section',
+      label: 'hero',
+      className: 'hero',
+      sourceStart: sectionStart,
+      sourceEnd: source.indexOf('>', sectionStart) + 1,
+      selectorHint: 'section.hero',
+    });
+    const report = buildReport([patch], []);
+
+    expect(await zipText(project, 'index.html')).toBe('<main><section>Keep</section></main>');
+    expect(report).toContain('Direct editor deletions');
+    expect(report).toContain('section.hero');
+    expect(report).toContain('source-backed element deletion');
   });
 });

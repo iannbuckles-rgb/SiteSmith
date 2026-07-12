@@ -18,6 +18,7 @@ export interface ApplyEditorReorderInput {
 
 type EditorEditPatch = Extract<AppliedPatch, { action: 'editor-edit' }>;
 type EditorReorderPatch = Extract<AppliedPatch, { action: 'editor-reorder' }>;
+type EditorDeletePatch = Extract<AppliedPatch, { action: 'editor-delete' }>;
 
 type OpenTagRange = {
   start: number;
@@ -198,6 +199,52 @@ export async function applyEditorReorder(
       sourceEnd: input.reference.sourceEnd,
     },
     placement: input.placement,
+    appliedAt: Date.now(),
+    previousSourceText,
+    currentSourceText,
+  };
+}
+
+export async function applyEditorDelete(
+  project: LoadedProject,
+  selection: EditorSelection,
+): Promise<EditorDeletePatch> {
+  if (selection.sourceFile.trim().length === 0) {
+    throw new Error('Selected element does not have a source file.');
+  }
+
+  const zipFile = project.zip.file(selection.sourceFile);
+  if (!zipFile) {
+    throw new Error(`Source file "${selection.sourceFile}" not found in archive.`);
+  }
+
+  const previousSourceText = await zipFile.async('text');
+  const openingRange = locateOpeningTag(previousSourceText, selection);
+  const elementRange = findElementRange(previousSourceText, selection.tagName.toLowerCase(), openingRange);
+  const deleteRange = expandRangeForMove(previousSourceText, elementRange);
+  const removedSourceText = previousSourceText.slice(deleteRange.start, deleteRange.end);
+  const currentSourceText = previousSourceText.slice(0, deleteRange.start)
+    + previousSourceText.slice(deleteRange.end);
+
+  if (currentSourceText === previousSourceText || removedSourceText.trim().length === 0) {
+    throw new Error('The selected element could not be deleted.');
+  }
+
+  project.zip.file(selection.sourceFile, currentSourceText);
+
+  return {
+    id: `editor-delete:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    action: 'editor-delete',
+    sourceFile: selection.sourceFile,
+    target: {
+      kind: selection.kind,
+      tagName: selection.tagName,
+      label: selection.label,
+      selectorHint: selection.selectorHint,
+      sourceStart: selection.sourceStart,
+      sourceEnd: selection.sourceEnd,
+    },
+    removedSourceText,
     appliedAt: Date.now(),
     previousSourceText,
     currentSourceText,

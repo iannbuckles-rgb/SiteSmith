@@ -156,6 +156,10 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
 
   lines.push('## Images replaced', '');
   const replacePatches = patches.filter((p) => p.action === 'replace');
+  const editorDeletePatches = patches.filter(
+    (p): p is Extract<AppliedPatch, { action: 'editor-delete' }> =>
+      p.action === 'editor-delete',
+  ).sort((a, b) => b.appliedAt - a.appliedAt);
   if (replacePatches.length === 0) {
     lines.push('_No replacements were applied._', '', '---', '');
   } else {
@@ -212,7 +216,9 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
   }
 
   // Remote dependencies (not localized).
-  const remote = detections.filter((d) => d.status === 'remote');
+  const remote = detections
+    .filter((d) => d.status === 'remote')
+    .filter((d) => !isDetectionHandledByPatch(d, patches, editorDeletePatches));
   lines.push('## Remaining remote dependencies', '');
   if (remote.length === 0) {
     lines.push('_None._ Every reference was local.', '');
@@ -244,12 +250,13 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
   );
   const patchedDetectionKeys = new Set(
     patches
-      .filter((p) => p.action === 'remove' || p.action === 'placeholder')
+      .filter((p) => p.action === 'replace' || p.action === 'remove' || p.action === 'placeholder')
       .map((p) => `${p.sourceFile}|${p.sourceTag}|${p.sourceAttr}|${p.rawUrl}`),
   );
   const remainingMissing = broken.filter((d) => {
     const key = `${d.sourceFile}|${d.sourceTag}|${d.sourceAttr}|${d.rawUrl}`;
     if (patchedDetectionKeys.has(key)) return false;
+    if (isDetectionDeletedByEditor(d, editorDeletePatches)) return false;
     const path = d.resolvedPath ?? '';
     return !!path && !replacedOriginals.has(path);
   });
@@ -428,6 +435,23 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
     }
   }
 
+  if (editorDeletePatches.length > 0) {
+    lines.push('## Direct editor deletions', '');
+    lines.push(
+      `${editorDeletePatches.length} source-backed element deletion${editorDeletePatches.length === 1 ? '' : 's'} applied from the live preview. These physically remove selected text, image, field, or component elements from their HTML source files.`,
+      '',
+    );
+    for (const p of editorDeletePatches) {
+      const at = new Date(p.appliedAt).toISOString();
+      const target = p.target.selectorHint ?? p.target.label;
+      lines.push(`### \`${p.sourceFile}\``, '');
+      lines.push(`- **Deleted**: \`${target}\` (${p.target.tagName}, ${p.target.kind})`);
+      lines.push(`- **Removed source**: \`${reportInline(p.removedSourceText)}\``);
+      lines.push(`- **Applied at**: ${at}`);
+      lines.push('');
+    }
+  }
+
   // Manual Replacements section. Pulled BEFORE Logo Helper because the
   // audit audience reads \"what the user manually rewrote\" before the
   // \"what the Logo Helper bulk-applied\". A single manual-replace patch
@@ -529,6 +553,29 @@ function sortByFile(detections: ImageDetection[]): ImageDetection[] {
     if (f !== 0) return f;
     return a.rawUrl.localeCompare(b.rawUrl);
   });
+}
+
+function isDetectionHandledByPatch(
+  detection: ImageDetection,
+  patches: AppliedPatch[],
+  editorDeletePatches: Array<Extract<AppliedPatch, { action: 'editor-delete' }>>,
+): boolean {
+  const key = `${detection.sourceFile}|${detection.sourceTag}|${detection.sourceAttr}|${detection.rawUrl}`;
+  const patchedByDetectionAction = patches.some((patch) => {
+    if (patch.action !== 'replace' && patch.action !== 'remove' && patch.action !== 'placeholder') return false;
+    return `${patch.sourceFile}|${patch.sourceTag}|${patch.sourceAttr}|${patch.rawUrl}` === key;
+  });
+  return patchedByDetectionAction || isDetectionDeletedByEditor(detection, editorDeletePatches);
+}
+
+function isDetectionDeletedByEditor(
+  detection: ImageDetection,
+  editorDeletePatches: Array<Extract<AppliedPatch, { action: 'editor-delete' }>>,
+): boolean {
+  return editorDeletePatches.some((patch) =>
+    patch.sourceFile === detection.sourceFile
+    && patch.removedSourceText.includes(detection.rawUrl),
+  );
 }
 
 function reportInline(value: string): string {

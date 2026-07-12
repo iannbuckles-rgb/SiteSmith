@@ -94,11 +94,15 @@ describe('previewServer.augmentHtml', () => {
     expect(out).toContain('contentEditable');
     expect(out).toContain('data-mockswap-editing');
     expect(out).toContain('data-mockswap-selected');
+    expect(out).toContain('ArrowUp');
+    expect(out).toContain('keyboardMove');
+    expect(out).toContain('data-mockswap-tabindex');
   });
 
   it('instruments editable elements with source ranges before serving', () => {
     const html = '<main><h1>Hello</h1><script>var x="<h1>skip</h1>";</script><img src="hero.png"></main>';
     const out = instrumentEditableMarkup(html);
+    expect(out).toMatch(/<main data-mockswap-source-start="0" data-mockswap-source-end="6">/);
     expect(out).toContain('data-mockswap-source-start="6"');
     expect(out).toContain('data-mockswap-source-end="10"');
     expect(out).toMatch(/<img src="hero\.png" data-mockswap-source-start="\d+" data-mockswap-source-end="\d+">/);

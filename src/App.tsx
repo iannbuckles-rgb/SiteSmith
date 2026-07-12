@@ -16,7 +16,7 @@ import type { EditorReorderTarget, EditorSelection, PreviewHistoryState, Preview
 import { applyPlaceholder, applyRemove, applyReplacement } from './lib/assetReplacer';
 import { bulkReplace } from './lib/bulkReplace';
 import { createAbortError, isAbortError, throwIfAborted } from './lib/cancellation';
-import { applyEditorEdit, applyEditorReorder } from './lib/editorPatch';
+import { applyEditorDelete, applyEditorEdit, applyEditorReorder } from './lib/editorPatch';
 import { applyFitStyleToCss, applyFitStyleToImg } from './lib/fitStyles';
 import {
   clearSession,
@@ -454,7 +454,7 @@ export default function App() {
     const rawUrl = selectedDetectionKey.slice(sep + 1);
     let best: AppliedPatch | null = null;
     for (const p of patchesByKey.values()) {
-      if (p.action === 'manual-replace' || p.action === 'editor-edit' || p.action === 'editor-reorder') continue;
+      if (p.action === 'manual-replace' || p.action === 'editor-edit' || p.action === 'editor-reorder' || p.action === 'editor-delete') continue;
       if (p.sourceFile !== sourceFile || p.rawUrl !== rawUrl) continue;
       if (!best || p.appliedAt > best.appliedAt) best = p;
     }
@@ -1451,7 +1451,7 @@ export default function App() {
     // cascade logic, so users who want to undo them should reach for
     // that path or "Undo Last Change".
     const related = Array.from(patchesByKey.values())
-      .filter((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder')
+      .filter((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder' && p.action !== 'editor-delete')
       .filter((p) => p.id === baseId || p.id.startsWith(baseId + '#'))
       .sort((a, b) => b.appliedAt - a.appliedAt);
     if (related.length === 0) {
@@ -1506,8 +1506,8 @@ export default function App() {
 
   const handleReplaceAgain = useCallback(() => {
     const ref = selectedDetection ?? (selectedAppliedPatch as AppliedPatch | null);
-    if (ref && !('action' in ref && (ref.action === 'manual-replace' || ref.action === 'editor-edit' || ref.action === 'editor-reorder'))) {
-      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' | 'editor-edit' | 'editor-reorder' }>>;
+    if (ref && !('action' in ref && (ref.action === 'manual-replace' || ref.action === 'editor-edit' || ref.action === 'editor-reorder' || ref.action === 'editor-delete'))) {
+      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' | 'editor-edit' | 'editor-reorder' | 'editor-delete' }>>;
       const id = `${refAsDetection.sourceFile}::${refAsDetection.sourceTag}::${refAsDetection.sourceAttr}::${refAsDetection.rawUrl}`;
       handleUndoPatchById(id);
       handleUndoPatchById(`${id}#fit`);
@@ -2003,6 +2003,67 @@ export default function App() {
     if (!editorSelection) return;
     void handleApplyEditorReorder(editorSelection, reference, placement);
   }, [editorSelection, handleApplyEditorReorder]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (previewMode !== 'editor' || editorBusy || !editorSelection) return;
+      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (
+        event.key !== 'ArrowUp' &&
+        event.key !== 'ArrowDown' &&
+        event.key !== 'ArrowLeft' &&
+        event.key !== 'ArrowRight'
+      ) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
+        return;
+      }
+      const earlier = event.key === 'ArrowUp' || event.key === 'ArrowLeft';
+      const reference = earlier ? editorSelection.moveBeforeTarget : editorSelection.moveAfterTarget;
+      if (!reference) return;
+      event.preventDefault();
+      handleMoveEditorSelection(earlier ? 'before' : 'after', reference);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewMode, editorBusy, editorSelection, handleMoveEditorSelection]);
+
+  const handleDeleteEditorSelection = useCallback(async () => {
+    if (!project || editorBusy || !editorSelection) return;
+    if (!project.entries.some((entry) => !entry.isDirectory && entry.path === editorSelection.sourceFile)) return;
+    setEditorBusy(true);
+    setEditorError(null);
+    try {
+      const patch = await applyEditorDelete(project, editorSelection);
+      setPatchesByKey((map) => {
+        const next = new Map(map);
+        next.set(patch.id, patch);
+        return next;
+      });
+      setEditorSelection(null);
+      setPreviewRevision((r) => r + 1);
+      setPreviewKey((k) => k + 1);
+      setExportState('idle');
+      setExportSummary(null);
+      setExportError(null);
+      pushToast({
+        kind: 'success',
+        title: 'Editor element deleted',
+        detail: `${patch.sourceFile} changed and is ready to export.`,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setEditorError(detail);
+      setPreviewKey((k) => k + 1);
+      pushToast({
+        kind: 'warning',
+        title: "Couldn't delete selected element",
+        detail,
+      });
+    } finally {
+      setEditorBusy(false);
+    }
+  }, [project, editorBusy, editorSelection, pushToast]);
 
   // ------------------------------------------------------------------------
   // Bulk replace handlers
@@ -2703,6 +2764,7 @@ export default function App() {
               onApplyEditorField={(field, value) => void handleApplyEditorField(field, value)}
               onApplyEditorImageFile={(file) => void handleApplyEditorImageFile(file)}
               onMoveEditorSelection={handleMoveEditorSelection}
+              onDeleteEditorSelection={() => void handleDeleteEditorSelection()}
               onClearEditorSelection={handleClearEditorSelection}
             />
           </div>

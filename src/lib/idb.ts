@@ -285,12 +285,8 @@ export async function deleteProjectRecord(id: string): Promise<void> {
   const db = await getDb();
   if (!db) return;
   try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(PROJECTS_STORE, 'readwrite');
-      const req = tx.objectStore(PROJECTS_STORE).delete(id);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error ?? new Error('IndexedDB project delete failed'));
-    });
+    const checkpoints = await readCheckpointsForProject(db, id);
+    await deleteProjectAndCheckpoints(db, id, checkpoints.map((checkpoint) => checkpoint.id));
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[mockswap] IndexedDB project delete failed:', err);
@@ -444,6 +440,24 @@ function writeProject(db: IDBDatabase, record: SavedProject): Promise<void> {
     tx.onabort = () => reject(tx.error ?? new Error('IndexedDB project transaction aborted'));
     const req = tx.objectStore(PROJECTS_STORE).put(record);
     req.onerror = () => reject(req.error ?? new Error('IndexedDB project write failed'));
+  });
+}
+
+function deleteProjectAndCheckpoints(db: IDBDatabase, projectId: string, checkpointIds: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([PROJECTS_STORE, CHECKPOINTS_STORE], 'readwrite');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB project delete transaction failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB project delete transaction aborted'));
+
+    const projectReq = tx.objectStore(PROJECTS_STORE).delete(projectId);
+    projectReq.onerror = () => reject(projectReq.error ?? new Error('IndexedDB project delete failed'));
+
+    const checkpointStore = tx.objectStore(CHECKPOINTS_STORE);
+    for (const checkpointId of checkpointIds) {
+      const req = checkpointStore.delete(checkpointId);
+      req.onerror = () => reject(req.error ?? new Error('IndexedDB checkpoint cascade delete failed'));
+    }
   });
 }
 
