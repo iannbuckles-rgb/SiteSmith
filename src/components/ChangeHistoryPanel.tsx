@@ -70,7 +70,7 @@ export function ChangeHistoryPanel({
     <div className="flex h-full min-h-0 flex-col gap-3" data-testid="history-panel">
       <Toolbar
         canUndoLast={sorted.length > 0}
-        canResetSelected={hasSelectedDetection && sorted.some((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder' && p.action !== 'editor-delete')}
+        canResetSelected={hasSelectedDetection && sorted.some((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder' && p.action !== 'editor-nudge' && p.action !== 'editor-delete')}
         onUndoLastChange={onUndoLastChange}
         onUndoAll={onUndoAll}
         onResetSelectedImage={onResetSelectedImage}
@@ -382,7 +382,7 @@ function HistoryRow({ patch, onUndo }: HistoryRowProps) {
  * others in the meta.extra string — they don't all fit on one diff card).
  */
 function sourceTextPairFor(patch: AppliedPatch): { before: string; after: string } | null {
-  if (patch.action === 'replace' || patch.action === 'fit-style' || patch.action === 'remove' || patch.action === 'placeholder' || patch.action === 'editor-edit' || patch.action === 'editor-reorder' || patch.action === 'editor-delete') {
+  if (patch.action === 'replace' || patch.action === 'fit-style' || patch.action === 'remove' || patch.action === 'placeholder' || patch.action === 'editor-edit' || patch.action === 'editor-reorder' || patch.action === 'editor-nudge' || patch.action === 'editor-delete') {
     return { before: patch.previousSourceText, after: patch.currentSourceText };
   }
   if (patch.action === 'manual-replace' && patch.modifiedFiles.length > 0) {
@@ -486,6 +486,15 @@ function describePatch(patch: AppliedPatch): PatchMeta {
         newPath: `${patch.placement} ${patch.reference.selectorHint ?? patch.reference.label}`,
         extra: `${patch.target.tagName} moved ${patch.placement} ${patch.reference.tagName}`,
       };
+    case 'editor-nudge':
+      return {
+        actionType: 'Editor move',
+        actionTone: 'border-teal-700/40 bg-teal-950/30 text-teal-200',
+        file: patch.sourceFile,
+        oldPath: patch.target.selectorHint ?? patch.target.label,
+        newPath: `translate(${formatDelta(patch.translateX)}, ${formatDelta(patch.translateY)})`,
+        extra: `${patch.target.tagName} nudged ${formatDelta(patch.deltaX)}, ${formatDelta(patch.deltaY)}`,
+      };
     case 'editor-delete':
       return {
         actionType: 'Editor delete',
@@ -496,6 +505,10 @@ function describePatch(patch: AppliedPatch): PatchMeta {
         extra: `${patch.target.tagName} removed from source`,
       };
   }
+}
+
+function formatDelta(value: number): string {
+  return `${value}px`;
 }
 
 function clipForMeta(text: string): string {

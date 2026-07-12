@@ -435,6 +435,29 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
     }
   }
 
+  const editorNudgePatches = patches.filter(
+    (p): p is Extract<AppliedPatch, { action: 'editor-nudge' }> =>
+      p.action === 'editor-nudge',
+  ).sort((a, b) => b.appliedAt - a.appliedAt);
+  if (editorNudgePatches.length > 0) {
+    lines.push('## Direct editor moves', '');
+    lines.push(
+      `${editorNudgePatches.length} keyboard move${editorNudgePatches.length === 1 ? '' : 's'} applied from the live preview. These update the selected element's inline \`translate\` style so the exported HTML preserves the precise visual offset.`,
+      '',
+    );
+    for (const p of editorNudgePatches) {
+      const at = new Date(p.appliedAt).toISOString();
+      const target = p.target.selectorHint ?? p.target.label;
+      lines.push(`### \`${p.sourceFile}\``, '');
+      lines.push(`- **Moved**: \`${target}\` (${p.target.tagName}, ${p.target.kind})`);
+      lines.push(`- **Delta**: x \`${formatReportPx(p.deltaX)}\`, y \`${formatReportPx(p.deltaY)}\``);
+      lines.push(`- **Result translate**: x \`${formatReportPx(p.translateX)}\`, y \`${formatReportPx(p.translateY)}\``);
+      lines.push(`- **Style**: \`${reportInline(p.previousStyle || '(none)')}\` → \`${reportInline(p.currentStyle || '(none)')}\``);
+      lines.push(`- **Applied at**: ${at}`);
+      lines.push('');
+    }
+  }
+
   if (editorDeletePatches.length > 0) {
     lines.push('## Direct editor deletions', '');
     lines.push(
@@ -582,6 +605,10 @@ function reportInline(value: string): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   const clipped = normalized.length > 140 ? normalized.slice(0, 137) + '...' : normalized;
   return clipped.replace(/`/g, '\u2018');
+}
+
+function formatReportPx(value: number): string {
+  return `${value}px`;
 }
 
 /** Best-effort role hint pulled from a Logo Helper candidate's id; used

@@ -16,7 +16,7 @@ import type { EditorReorderTarget, EditorSelection, PreviewHistoryState, Preview
 import { applyPlaceholder, applyRemove, applyReplacement } from './lib/assetReplacer';
 import { bulkReplace } from './lib/bulkReplace';
 import { createAbortError, isAbortError, throwIfAborted } from './lib/cancellation';
-import { applyEditorDelete, applyEditorEdit, applyEditorReorder } from './lib/editorPatch';
+import { applyEditorDelete, applyEditorEdit, applyEditorNudge, applyEditorReorder } from './lib/editorPatch';
 import { applyFitStyleToCss, applyFitStyleToImg } from './lib/fitStyles';
 import {
   clearSession,
@@ -71,6 +71,7 @@ const NAV_MESSAGE_TYPE = 'mockswap:navigate';
 const TEXT_EDIT_MESSAGE_TYPE = 'mockswap:text-edit';
 const SELECT_MESSAGE_TYPE = 'mockswap:select-element';
 const REORDER_MESSAGE_TYPE = 'mockswap:reorder-element';
+const NUDGE_MESSAGE_TYPE = 'mockswap:nudge-element';
 
 /** Save-to-IndexedDB debounce window. Big zips take ~60–80 ms to blob; we
  *  batch rapid mutations (chip clicks, typed searches) so 1 s is safe. */
@@ -162,6 +163,7 @@ export default function App() {
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
   const [previewMode, setPreviewMode] = useState<PreviewMode>('preview');
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
+  const [editorClearSelectionSignal, setEditorClearSelectionSignal] = useState(0);
   const [editorBusy, setEditorBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
 
@@ -235,6 +237,7 @@ export default function App() {
   const [checkpointRestoreTarget, setCheckpointRestoreTarget] = useState<Checkpoint | null>(null);
   const saveFailureToastShownRef = useRef(false);
   const saveFailureToastIdRef = useRef<string | null>(null);
+  const editorNudgeQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const pushToast = useCallback((toast: Omit<ToastData, 'id' | 'expiresAt'> & { autoDismiss?: boolean }) => {
     const id = `toast-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -376,10 +379,8 @@ export default function App() {
   // Derived state
   // ------------------------------------------------------------------------
 
-  const liveEntries = useMemo<ZipEntryMeta[]>(() => {
-    if (!project) return [];
-    const indexed = new Map<string, ZipEntryMeta>();
-    for (const e of project.entries) indexed.set(e.path, e);
+  const liveAssetEntrySignature = useMemo(() => {
+    const assets: Array<[string, number]> = [];
     for (const patch of patchesByKey.values()) {
       let newAssetPath: string | undefined;
       let size = 0;
@@ -390,17 +391,27 @@ export default function App() {
         newAssetPath = patch.newAssetPath;
         size = patch.replacementBytes ?? 0;
       }
-      if (!newAssetPath) continue;
-      indexed.set(newAssetPath, {
-        name: newAssetPath.split('/').pop() ?? newAssetPath,
-        path: newAssetPath,
+      if (newAssetPath) assets.push([newAssetPath, size]);
+    }
+    return JSON.stringify(assets.sort(([a], [b]) => a.localeCompare(b)));
+  }, [patchesByKey]);
+
+  const liveEntries = useMemo<ZipEntryMeta[]>(() => {
+    if (!project) return [];
+    const indexed = new Map<string, ZipEntryMeta>();
+    for (const e of project.entries) indexed.set(e.path, e);
+    const assetEntries = JSON.parse(liveAssetEntrySignature) as Array<[string, number]>;
+    for (const [assetPath, size] of assetEntries) {
+      indexed.set(assetPath, {
+        name: assetPath.split('/').pop() ?? assetPath,
+        path: assetPath,
         isDirectory: false,
         size,
         category: 'image',
       });
     }
     return Array.from(indexed.values()).sort((a, b) => a.path.localeCompare(b.path));
-  }, [project, patchesByKey]);
+  }, [project, liveAssetEntrySignature]);
 
   const liveProject = useMemo<LoadedProject | null>(() => {
     if (!project) return null;
@@ -454,7 +465,7 @@ export default function App() {
     const rawUrl = selectedDetectionKey.slice(sep + 1);
     let best: AppliedPatch | null = null;
     for (const p of patchesByKey.values()) {
-      if (p.action === 'manual-replace' || p.action === 'editor-edit' || p.action === 'editor-reorder' || p.action === 'editor-delete') continue;
+      if (p.action === 'manual-replace' || p.action === 'editor-edit' || p.action === 'editor-reorder' || p.action === 'editor-nudge' || p.action === 'editor-delete') continue;
       if (p.sourceFile !== sourceFile || p.rawUrl !== rawUrl) continue;
       if (!best || p.appliedAt > best.appliedAt) best = p;
     }
@@ -1451,7 +1462,7 @@ export default function App() {
     // cascade logic, so users who want to undo them should reach for
     // that path or "Undo Last Change".
     const related = Array.from(patchesByKey.values())
-      .filter((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder' && p.action !== 'editor-delete')
+      .filter((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit' && p.action !== 'editor-reorder' && p.action !== 'editor-nudge' && p.action !== 'editor-delete')
       .filter((p) => p.id === baseId || p.id.startsWith(baseId + '#'))
       .sort((a, b) => b.appliedAt - a.appliedAt);
     if (related.length === 0) {
@@ -1506,8 +1517,8 @@ export default function App() {
 
   const handleReplaceAgain = useCallback(() => {
     const ref = selectedDetection ?? (selectedAppliedPatch as AppliedPatch | null);
-    if (ref && !('action' in ref && (ref.action === 'manual-replace' || ref.action === 'editor-edit' || ref.action === 'editor-reorder' || ref.action === 'editor-delete'))) {
-      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' | 'editor-edit' | 'editor-reorder' | 'editor-delete' }>>;
+    if (ref && !('action' in ref && (ref.action === 'manual-replace' || ref.action === 'editor-edit' || ref.action === 'editor-reorder' || ref.action === 'editor-nudge' || ref.action === 'editor-delete'))) {
+      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' | 'editor-edit' | 'editor-reorder' | 'editor-nudge' | 'editor-delete' }>>;
       const id = `${refAsDetection.sourceFile}::${refAsDetection.sourceTag}::${refAsDetection.sourceAttr}::${refAsDetection.rawUrl}`;
       handleUndoPatchById(id);
       handleUndoPatchById(`${id}#fit`);
@@ -1800,6 +1811,7 @@ export default function App() {
   }, [project, pushToast]);
 
   const handleClearEditorSelection = useCallback(() => {
+    setEditorClearSelectionSignal((value) => value + 1);
     setEditorSelection(null);
     setEditorError(null);
   }, []);
@@ -2004,29 +2016,52 @@ export default function App() {
     void handleApplyEditorReorder(editorSelection, reference, placement);
   }, [editorSelection, handleApplyEditorReorder]);
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (previewMode !== 'editor' || editorBusy || !editorSelection) return;
-      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-      if (
-        event.key !== 'ArrowUp' &&
-        event.key !== 'ArrowDown' &&
-        event.key !== 'ArrowLeft' &&
-        event.key !== 'ArrowRight'
-      ) return;
-      const target = event.target as HTMLElement | null;
-      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
-        return;
+  const handleApplyEditorNudge = useCallback((
+    selection: EditorSelection,
+    deltaX: number,
+    deltaY: number,
+  ) => {
+    const applyNudge = async () => {
+      if (!project) return;
+      if (!project.entries.some((entry) => !entry.isDirectory && entry.path === selection.sourceFile)) return;
+      try {
+        const patch = await applyEditorNudge(project, { selection, deltaX, deltaY });
+        setPatchesByKey((map) => {
+          const next = new Map(map);
+          next.set(patch.id, patch);
+          return next;
+        });
+        setEditorSelection((current) => {
+          if (!current || current.sourceFile !== selection.sourceFile || current.tagName !== selection.tagName) {
+            return current;
+          }
+          if (
+            typeof current.sourceStart === 'number' &&
+            typeof selection.sourceStart === 'number' &&
+            current.sourceStart !== selection.sourceStart
+          ) {
+            return current;
+          }
+          return { ...current, style: patch.currentStyle };
+        });
+        setEditorError(null);
+        setExportState('idle');
+        setExportSummary(null);
+        setExportError(null);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        setEditorError(detail);
+        setPreviewKey((k) => k + 1);
+        pushToast({
+          kind: 'warning',
+          title: "Couldn't move selected element",
+          detail,
+        });
       }
-      const earlier = event.key === 'ArrowUp' || event.key === 'ArrowLeft';
-      const reference = earlier ? editorSelection.moveBeforeTarget : editorSelection.moveAfterTarget;
-      if (!reference) return;
-      event.preventDefault();
-      handleMoveEditorSelection(earlier ? 'before' : 'after', reference);
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [previewMode, editorBusy, editorSelection, handleMoveEditorSelection]);
+    };
+    editorNudgeQueueRef.current = editorNudgeQueueRef.current.then(applyNudge, applyNudge);
+    void editorNudgeQueueRef.current;
+  }, [project, pushToast]);
 
   const handleDeleteEditorSelection = useCallback(async () => {
     if (!project || editorBusy || !editorSelection) return;
@@ -2232,6 +2267,7 @@ export default function App() {
     setPreviewFullscreen(false);
     setPreviewMode('preview');
     setEditorSelection(null);
+    setEditorClearSelectionSignal(0);
     setEditorBusy(false);
     setEditorError(null);
     setActiveMobilePane('left');
@@ -2504,6 +2540,25 @@ export default function App() {
         }
         return;
       }
+      if (type === NUDGE_MESSAGE_TYPE) {
+        const payload = data as {
+          sourceFile?: unknown;
+          selection?: unknown;
+          deltaX?: unknown;
+          deltaY?: unknown;
+        };
+        const selection = readEditorSelection(payload.selection, payload.sourceFile);
+        if (
+          selection &&
+          typeof payload.deltaX === 'number' &&
+          typeof payload.deltaY === 'number' &&
+          Number.isFinite(payload.deltaX) &&
+          Number.isFinite(payload.deltaY)
+        ) {
+          handleApplyEditorNudge(selection, payload.deltaX, payload.deltaY);
+        }
+        return;
+      }
       if (type === REORDER_MESSAGE_TYPE) {
         const payload = data as {
           sourceFile?: unknown;
@@ -2541,7 +2596,7 @@ export default function App() {
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [navigateToPage, handleApplyPreviewTextEdit, handleApplyEditorReorder]);
+  }, [navigateToPage, handleApplyPreviewTextEdit, handleApplyEditorNudge, handleApplyEditorReorder]);
 
   useEffect(() => {
     if (!rightDrawerOpen) return;
@@ -2708,6 +2763,7 @@ export default function App() {
               onOpenInNewTab={handleOpenInNewTab}
               mode={previewMode}
               onChangeMode={handleChangePreviewMode}
+              clearSelectionSignal={editorClearSelectionSignal}
               editCount={patchesByKey.size}
             />
           </ErrorBoundary>

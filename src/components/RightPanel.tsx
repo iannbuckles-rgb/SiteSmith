@@ -316,7 +316,7 @@ function EditorInspector({
                   type="button"
                   onClick={() => selection.moveBeforeTarget && onMove('before', selection.moveBeforeTarget)}
                   disabled={busy || !selection.moveBeforeTarget}
-                  title={selection.moveBeforeTarget ? `Move before ${selection.moveBeforeTarget.label} (ArrowUp or ArrowLeft)` : 'No previous sibling'}
+                  title={selection.moveBeforeTarget ? `Move before ${selection.moveBeforeTarget.label}` : 'No previous sibling'}
                   className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
                   data-testid="editor-move-earlier"
                 >
@@ -327,7 +327,7 @@ function EditorInspector({
                   type="button"
                   onClick={() => selection.moveAfterTarget && onMove('after', selection.moveAfterTarget)}
                   disabled={busy || !selection.moveAfterTarget}
-                  title={selection.moveAfterTarget ? `Move after ${selection.moveAfterTarget.label} (ArrowDown or ArrowRight)` : 'No next sibling'}
+                  title={selection.moveAfterTarget ? `Move after ${selection.moveAfterTarget.label}` : 'No next sibling'}
                   className="inline-flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
                   data-testid="editor-move-later"
                 >

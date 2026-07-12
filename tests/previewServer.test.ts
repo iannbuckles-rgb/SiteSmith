@@ -89,6 +89,8 @@ describe('previewServer.augmentHtml', () => {
     expect(out).toContain('mockswap:set-edit-mode');
     expect(out).toContain('mockswap:text-edit');
     expect(out).toContain('mockswap:select-element');
+    expect(out).toContain('mockswap:nudge-element');
+    expect(out).toContain('mockswap:clear-selection');
     expect(out).toContain('sourceStart');
     expect(out).toContain('className');
     expect(out).toContain('contentEditable');
@@ -96,6 +98,9 @@ describe('previewServer.augmentHtml', () => {
     expect(out).toContain('data-mockswap-selected');
     expect(out).toContain('ArrowUp');
     expect(out).toContain('keyboardMove');
+    expect(out).toContain('flushNudge');
+    expect(out).toContain('e.shiftKey?10');
+    expect(out).not.toContain('document.addEventListener("keyup"');
     expect(out).toContain('data-mockswap-tabindex');
   });
 

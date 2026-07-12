@@ -19,6 +19,7 @@
  *       placeholder      — overwrite sourceFile with previousSourceText.
  *       editor-edit      — overwrite sourceFile with previousSourceText.
  *       editor-reorder   — overwrite sourceFile with previousSourceText.
+ *       editor-nudge     — overwrite sourceFile with previousSourceText.
  *       editor-delete    — overwrite sourceFile with previousSourceText.
  *   - Idempotent: re-applying on a zip that's already restored is a
  *     harmless write of the same bytes.
@@ -58,6 +59,7 @@ export function undoPatchById(project: LoadedProject, patch: AppliedPatch): void
     case 'placeholder':
     case 'editor-edit':
     case 'editor-reorder':
+    case 'editor-nudge':
     case 'editor-delete': {
       project.zip.file(patch.sourceFile, patch.previousSourceText);
       return;

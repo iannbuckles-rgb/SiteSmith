@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyEditorDelete, applyEditorEdit, applyEditorReorder } from '../src/lib/editorPatch';
+import { applyEditorDelete, applyEditorEdit, applyEditorNudge, applyEditorReorder } from '../src/lib/editorPatch';
 import { buildReport } from '../src/lib/exportService';
 import { undoPatchById } from '../src/lib/undoStack';
 import type { EditorSelection } from '../src/lib/previewControls';
@@ -165,6 +165,76 @@ describe('applyEditorReorder', () => {
     expect(report).toContain('Direct editor reorders');
     expect(report).toContain('Placement');
     expect(report).toContain('before `label`');
+  });
+});
+
+describe('applyEditorNudge', () => {
+  it('nudges a form field with precise pixel translate and survives stale source-end markers', async () => {
+    const source = '<form><input name="email" style="width: 200px"></form>';
+    const project = makeProject({ 'index.html': source });
+    const inputStart = source.indexOf('<input');
+    const inputEnd = source.indexOf('>', inputStart) + 1;
+    const selection: EditorSelection = {
+      sourceFile: 'index.html',
+      kind: 'element',
+      tagName: 'input',
+      label: 'email',
+      sourceStart: inputStart,
+      sourceEnd: inputEnd,
+      selectorHint: 'input',
+    };
+
+    const first = await applyEditorNudge(project, {
+      selection,
+      deltaX: 1,
+      deltaY: 0.25,
+    });
+
+    expect(first.action).toBe('editor-nudge');
+    expect(await zipText(project, 'index.html')).toBe(
+      '<form><input name="email" style="width: 200px; translate: 1px 0.25px"></form>',
+    );
+
+    const second = await applyEditorNudge(project, {
+      selection,
+      deltaX: -2,
+      deltaY: 9.75,
+    });
+
+    expect(await zipText(project, 'index.html')).toBe(
+      '<form><input name="email" style="width: 200px; translate: -1px 10px"></form>',
+    );
+
+    undoPatchById(project, second);
+    expect(await zipText(project, 'index.html')).toBe(
+      '<form><input name="email" style="width: 200px; translate: 1px 0.25px"></form>',
+    );
+    undoPatchById(project, first);
+    expect(await zipText(project, 'index.html')).toBe(source);
+  });
+
+  it('reports keyboard editor moves in the export audit', async () => {
+    const source = '<section id="card">Card</section>';
+    const project = makeProject({ 'index.html': source });
+    const patch = await applyEditorNudge(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'element',
+        tagName: 'section',
+        label: 'Card',
+        elementId: 'card',
+        sourceStart: 0,
+        sourceEnd: '<section id="card">'.length,
+        selectorHint: 'section#card',
+      },
+      deltaX: 10,
+      deltaY: -1,
+    });
+    const report = buildReport([patch], []);
+
+    expect(report).toContain('Direct editor moves');
+    expect(report).toContain('x `10px`');
+    expect(report).toContain('y `-1px`');
   });
 });
 

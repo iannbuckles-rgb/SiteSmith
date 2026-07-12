@@ -79,6 +79,7 @@ interface CenterPanelProps {
   onOpenInNewTab: () => void;
   mode: PreviewMode;
   onChangeMode: (mode: PreviewMode) => void;
+  clearSelectionSignal: number;
   /** Number of AppliedPatch entries currently applied. Drawn as a
    *  small violet pill in the toolbar so the user can tell at a
    *  glance when their preview reflects work. */
@@ -95,6 +96,7 @@ export function CenterPanel({
   fullscreen, onToggleFullscreen, onExitFullscreen,
   onOpenInNewTab,
   mode, onChangeMode,
+  clearSelectionSignal,
   editCount,
 }: CenterPanelProps) {
   // ESC closes fullscreen overlay — a universal expectation for
@@ -146,6 +148,7 @@ export function CenterPanel({
         viewport={viewport}
         zoom={zoom}
         mode={mode}
+        clearSelectionSignal={clearSelectionSignal}
       />
     </div>
   );
@@ -568,19 +571,29 @@ interface PreviewStageProps {
   viewport: PreviewViewport;
   zoom: number;
   mode: PreviewMode;
+  clearSelectionSignal: number;
 }
 
 function PreviewStage({
   project, preview, previewBuilding, previewKey, currentPagePath,
-  viewport, zoom, mode,
+  viewport, zoom, mode, clearSelectionSignal,
 }: PreviewStageProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const clearSelectionSignalRef = useRef(clearSelectionSignal);
 
   useEffect(() => {
     const target = iframeRef.current?.contentWindow;
     if (!target) return;
     target.postMessage({ type: 'mockswap:set-edit-mode', enabled: mode === 'editor' }, '*');
   }, [mode, previewKey, currentPagePath]);
+
+  useEffect(() => {
+    if (clearSelectionSignalRef.current === clearSelectionSignal) return;
+    clearSelectionSignalRef.current = clearSelectionSignal;
+    const target = iframeRef.current?.contentWindow;
+    if (!target) return;
+    target.postMessage({ type: 'mockswap:clear-selection' }, '*');
+  }, [clearSelectionSignal]);
 
   if (!project) {
     return (

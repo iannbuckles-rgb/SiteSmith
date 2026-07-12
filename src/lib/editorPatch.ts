@@ -16,8 +16,15 @@ export interface ApplyEditorReorderInput {
   placement: 'before' | 'after';
 }
 
+export interface ApplyEditorNudgeInput {
+  selection: EditorSelection;
+  deltaX: number;
+  deltaY: number;
+}
+
 type EditorEditPatch = Extract<AppliedPatch, { action: 'editor-edit' }>;
 type EditorReorderPatch = Extract<AppliedPatch, { action: 'editor-reorder' }>;
+type EditorNudgePatch = Extract<AppliedPatch, { action: 'editor-nudge' }>;
 type EditorDeletePatch = Extract<AppliedPatch, { action: 'editor-delete' }>;
 
 type OpenTagRange = {
@@ -205,6 +212,69 @@ export async function applyEditorReorder(
   };
 }
 
+export async function applyEditorNudge(
+  project: LoadedProject,
+  input: ApplyEditorNudgeInput,
+): Promise<EditorNudgePatch> {
+  const deltaX = normalizePixelValue(input.deltaX);
+  const deltaY = normalizePixelValue(input.deltaY);
+  if (deltaX === 0 && deltaY === 0) {
+    throw new Error('No movement to apply.');
+  }
+  if (input.selection.sourceFile.trim().length === 0) {
+    throw new Error('Selected element does not have a source file.');
+  }
+
+  const zipFile = project.zip.file(input.selection.sourceFile);
+  if (!zipFile) {
+    throw new Error(`Source file "${input.selection.sourceFile}" not found in archive.`);
+  }
+
+  const previousSourceText = await zipFile.async('text');
+  const openingRange = locateOpeningTag(previousSourceText, input.selection);
+  const opening = previousSourceText.slice(openingRange.start, openingRange.end);
+  const previousStyle = readAttribute(opening, 'style') ?? '';
+  const previousTranslate = readTranslateProperty(previousStyle);
+  const nextTranslate = {
+    x: normalizePixelValue(previousTranslate.x + deltaX),
+    y: normalizePixelValue(previousTranslate.y + deltaY),
+  };
+  const currentStyle = writeTranslateProperty(previousStyle, nextTranslate.x, nextTranslate.y);
+  const nextOpening = setAttribute(opening, 'style', currentStyle, true);
+  const currentSourceText = previousSourceText.slice(0, openingRange.start)
+    + nextOpening
+    + previousSourceText.slice(openingRange.end);
+
+  if (currentSourceText === previousSourceText) {
+    throw new Error('The selected element did not move.');
+  }
+
+  project.zip.file(input.selection.sourceFile, currentSourceText);
+
+  return {
+    id: `editor-nudge:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    action: 'editor-nudge',
+    sourceFile: input.selection.sourceFile,
+    target: {
+      kind: input.selection.kind,
+      tagName: input.selection.tagName,
+      label: input.selection.label,
+      selectorHint: input.selection.selectorHint,
+      sourceStart: input.selection.sourceStart,
+      sourceEnd: input.selection.sourceEnd,
+    },
+    deltaX,
+    deltaY,
+    translateX: nextTranslate.x,
+    translateY: nextTranslate.y,
+    previousStyle,
+    currentStyle,
+    appliedAt: Date.now(),
+    previousSourceText,
+    currentSourceText,
+  };
+}
+
 export async function applyEditorDelete(
   project: LoadedProject,
   selection: EditorSelection,
@@ -284,6 +354,10 @@ function locateOpeningTag(source: string, selection: ReorderLocator): OpenTagRan
     && selection.sourceEnd > selection.sourceStart
     && selection.sourceEnd <= source.length
   ) {
+    const tagAtStart = readTagAt(source, selection.sourceStart);
+    if (tagAtStart && !tagAtStart.closing && tagAtStart.name === tagName) {
+      return { start: tagAtStart.start, end: tagAtStart.end };
+    }
     const candidate = source.slice(selection.sourceStart, selection.sourceEnd);
     if (isOpeningTagFor(candidate, tagName)) {
       return { start: selection.sourceStart, end: selection.sourceEnd };
@@ -444,6 +518,119 @@ function setAttribute(opening: string, attrName: string, rawValue: string, remov
   if (existing) return opening.replace(attrRe, replacement);
   const insertAt = opening.endsWith('/>') ? opening.length - 2 : opening.length - 1;
   return opening.slice(0, insertAt) + replacement + opening.slice(insertAt);
+}
+
+function readTranslateProperty(style: string): { x: number; y: number } {
+  const raw = readStyleProperty(style, 'translate');
+  if (!raw || raw.trim().toLowerCase() === 'none') return { x: 0, y: 0 };
+  const tokens = raw.trim().replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { x: 0, y: 0 };
+  if (tokens.length > 3) {
+    throw new Error('Selected element uses a complex translate style. Edit its style manually before nudging.');
+  }
+  const z = tokens[2] ? parsePixelToken(tokens[2]) : 0;
+  if (tokens[2] && z !== 0) {
+    throw new Error('Selected element uses 3D translate. Edit its style manually before nudging.');
+  }
+  return {
+    x: parsePixelToken(tokens[0]),
+    y: tokens[1] ? parsePixelToken(tokens[1]) : 0,
+  };
+}
+
+function writeTranslateProperty(style: string, x: number, y: number): string {
+  if (x === 0 && y === 0) return writeStyleProperty(style, 'translate', '');
+  return writeStyleProperty(style, 'translate', `${formatPixelValue(x)} ${formatPixelValue(y)}`);
+}
+
+function readStyleProperty(style: string, property: string): string | null {
+  const propertyKey = property.toLowerCase();
+  for (const declaration of splitStyleDeclarations(style)) {
+    const parsed = parseStyleDeclaration(declaration);
+    if (parsed && parsed.property.toLowerCase() === propertyKey) return parsed.value;
+  }
+  return null;
+}
+
+function writeStyleProperty(style: string, property: string, value: string): string {
+  const propertyKey = property.toLowerCase();
+  const nextValue = value.trim();
+  let replaced = false;
+  const out: string[] = [];
+  for (const declaration of splitStyleDeclarations(style)) {
+    const trimmed = declaration.trim();
+    if (!trimmed) continue;
+    const parsed = parseStyleDeclaration(trimmed);
+    if (parsed && parsed.property.toLowerCase() === propertyKey) {
+      replaced = true;
+      if (nextValue) out.push(`${property}: ${nextValue}`);
+    } else {
+      out.push(trimmed);
+    }
+  }
+  if (!replaced && nextValue) out.push(`${property}: ${nextValue}`);
+  return out.join('; ');
+}
+
+function splitStyleDeclarations(style: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quote: string | null = null;
+  let depth = 0;
+  for (let i = 0; i < style.length; i += 1) {
+    const ch = style[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+      continue;
+    }
+    if (ch === ')' && depth > 0) {
+      depth -= 1;
+      continue;
+    }
+    if (ch === ';' && depth === 0) {
+      parts.push(style.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(style.slice(start));
+  return parts;
+}
+
+function parseStyleDeclaration(declaration: string): { property: string; value: string } | null {
+  const index = declaration.indexOf(':');
+  if (index <= 0) return null;
+  const property = declaration.slice(0, index).trim();
+  if (!property) return null;
+  return { property, value: declaration.slice(index + 1).trim() };
+}
+
+function parsePixelToken(token: string): number {
+  const raw = token.trim().toLowerCase();
+  if (raw === '0' || raw === '+0' || raw === '-0') return 0;
+  const match = raw.match(/^([+-]?(?:\d+|\d*\.\d+))px$/);
+  if (!match) {
+    throw new Error('Selected element uses a non-pixel translate value. Edit its style manually before nudging.');
+  }
+  return normalizePixelValue(Number(match[1]));
+}
+
+function normalizePixelValue(value: number): number {
+  if (!Number.isFinite(value)) throw new Error('Movement must be a finite number.');
+  const rounded = Math.round(value * 1000) / 1000;
+  return Math.abs(rounded) < 0.0005 ? 0 : rounded;
+}
+
+function formatPixelValue(value: number): string {
+  const normalized = normalizePixelValue(value);
+  return `${String(normalized).replace(/\.0+$/, '')}px`;
 }
 
 function readAttribute(opening: string, attrName: string): string | null {

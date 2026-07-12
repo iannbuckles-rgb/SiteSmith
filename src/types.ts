@@ -364,6 +364,28 @@ export type AppliedPatch =
     }
   | {
       id: string;
+      action: 'editor-nudge';
+      sourceFile: string;
+      target: {
+        kind: 'text' | 'image' | 'element';
+        tagName: string;
+        label: string;
+        selectorHint?: string;
+        sourceStart?: number;
+        sourceEnd?: number;
+      };
+      deltaX: number;
+      deltaY: number;
+      translateX: number;
+      translateY: number;
+      previousStyle: string;
+      currentStyle: string;
+      appliedAt: number;
+      previousSourceText: string;
+      currentSourceText: string;
+    }
+  | {
+      id: string;
       action: 'editor-delete';
       sourceFile: string;
       target: {
