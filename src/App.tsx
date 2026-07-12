@@ -16,6 +16,7 @@ import type { EditorSelection, PreviewHistoryState, PreviewMode, PreviewViewport
 import { applyPlaceholder, applyRemove, applyReplacement } from './lib/assetReplacer';
 import { bulkReplace } from './lib/bulkReplace';
 import { createAbortError, isAbortError, throwIfAborted } from './lib/cancellation';
+import { applyEditorEdit } from './lib/editorPatch';
 import { applyFitStyleToCss, applyFitStyleToImg } from './lib/fitStyles';
 import {
   clearSession,
@@ -45,6 +46,7 @@ import type {
   AppliedPatch,
   ExportState,
   ExportSummary,
+  EditorEditField,
   ImageDetection,
   ImageFitConfig,
   LeftPanelMode,
@@ -451,7 +453,7 @@ export default function App() {
     const rawUrl = selectedDetectionKey.slice(sep + 1);
     let best: AppliedPatch | null = null;
     for (const p of patchesByKey.values()) {
-      if (p.action === 'manual-replace') continue;
+      if (p.action === 'manual-replace' || p.action === 'editor-edit') continue;
       if (p.sourceFile !== sourceFile || p.rawUrl !== rawUrl) continue;
       if (!best || p.appliedAt > best.appliedAt) best = p;
     }
@@ -1448,7 +1450,7 @@ export default function App() {
     // cascade logic, so users who want to undo them should reach for
     // that path or "Undo Last Change".
     const related = Array.from(patchesByKey.values())
-      .filter((p) => p.action !== 'manual-replace')
+      .filter((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit')
       .filter((p) => p.id === baseId || p.id.startsWith(baseId + '#'))
       .sort((a, b) => b.appliedAt - a.appliedAt);
     if (related.length === 0) {
@@ -1503,8 +1505,8 @@ export default function App() {
 
   const handleReplaceAgain = useCallback(() => {
     const ref = selectedDetection ?? (selectedAppliedPatch as AppliedPatch | null);
-    if (ref && !('action' in ref && ref.action === 'manual-replace')) {
-      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' }>>;
+    if (ref && !('action' in ref && (ref.action === 'manual-replace' || ref.action === 'editor-edit'))) {
+      const refAsDetection = ref as Exclude<typeof ref, Extract<typeof ref, { action: 'manual-replace' | 'editor-edit' }>>;
       const id = `${refAsDetection.sourceFile}::${refAsDetection.sourceTag}::${refAsDetection.sourceAttr}::${refAsDetection.rawUrl}`;
       handleUndoPatchById(id);
       handleUndoPatchById(`${id}#fit`);
@@ -1731,6 +1733,11 @@ export default function App() {
     sourceFile: string;
     oldText: string;
     newText: string;
+    tagName?: string;
+    label?: string;
+    sourceStart?: number;
+    sourceEnd?: number;
+    selectorHint?: string;
   }) => {
     if (!project) return;
     const oldText = input.oldText.trim();
@@ -1739,19 +1746,36 @@ export default function App() {
     if (!project.entries.some((entry) => !entry.isDirectory && entry.path === input.sourceFile)) return;
     setManualReplaceError(null);
     try {
-      const { patch } = await applyManualReplace(project, {
-        scope: input.sourceFile,
-        searchText: oldText,
-        replacementText: newText,
-        replaceAll: false,
-        imageFile: null,
-        customAssetFilename: '',
-      });
+      const patch = input.tagName
+        ? await applyEditorEdit(project, {
+          selection: {
+            sourceFile: input.sourceFile,
+            kind: 'text',
+            tagName: input.tagName,
+            label: input.label ?? oldText,
+            text: oldText,
+            sourceStart: input.sourceStart,
+            sourceEnd: input.sourceEnd,
+            selectorHint: input.selectorHint,
+          },
+          edits: [{ field: 'text', oldValue: oldText, newValue: newText }],
+        })
+        : (await applyManualReplace(project, {
+          scope: input.sourceFile,
+          searchText: oldText,
+          replacementText: newText,
+          replaceAll: false,
+          imageFile: null,
+          customAssetFilename: '',
+        })).patch;
       setPatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
       });
+      setEditorSelection((current) => current?.sourceFile === input.sourceFile && current.kind === 'text'
+        ? { ...current, text: newText, label: newText }
+        : current);
       setPreviewRevision((r) => r + 1);
       setPreviewKey((k) => k + 1);
       setExportState('idle');
@@ -1787,13 +1811,9 @@ export default function App() {
     setEditorBusy(true);
     setEditorError(null);
     try {
-      const { patch } = await applyManualReplace(project, {
-        scope: editorSelection.sourceFile,
-        searchText: oldText,
-        replacementText,
-        replaceAll: false,
-        imageFile: null,
-        customAssetFilename: '',
+      const patch = await applyEditorEdit(project, {
+        selection: editorSelection,
+        edits: [{ field: 'text', oldValue: oldText, newValue: replacementText }],
       });
       setPatchesByKey((map) => {
         const next = new Map(map);
@@ -1826,41 +1846,49 @@ export default function App() {
     }
   }, [project, editorBusy, editorSelection, pushToast]);
 
-  const handleApplyEditorImageUrl = useCallback(async (newSrc: string) => {
-    if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'image') return;
-    const oldSrc = (editorSelection.src ?? '').trim();
-    const replacementText = newSrc.trim();
-    if (!oldSrc || !replacementText || oldSrc === replacementText) return;
+  const handleApplyEditorField = useCallback(async (field: Exclude<EditorEditField, 'text'>, value: string) => {
+    if (!project || editorBusy || !editorSelection) return;
+    if (field === 'src' && editorSelection.kind !== 'image') return;
+    if (field === 'alt' && editorSelection.kind !== 'image') return;
+    if ((field === 'src' || field === 'href') && value.trim().length === 0) return;
+    const nextValue = value.trim();
+    const currentValue = editorFieldValue(editorSelection, field).trim();
+    if (nextValue === currentValue) return;
     setEditorBusy(true);
     setEditorError(null);
     try {
-      const { patch } = await applyManualReplace(project, {
-        scope: editorSelection.sourceFile,
-        searchText: oldSrc,
-        replacementText,
-        replaceAll: false,
-        imageFile: null,
-        customAssetFilename: '',
+      const patch = await applyEditorEdit(project, {
+        selection: editorSelection,
+        edits: [{ field, oldValue: currentValue, newValue: nextValue }],
       });
       setPatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
       });
-      setEditorSelection((current) => current && current.kind === 'image'
-        ? { ...current, src: replacementText, label: current.alt || replacementText.split(/[/?#]/).filter(Boolean).pop() || 'Image' }
-        : current);
+      setEditorSelection((current) => updateEditorSelectionField(current, field, nextValue));
       setPreviewRevision((r) => r + 1);
       setPreviewKey((k) => k + 1);
       setExportState('idle');
       setExportSummary(null);
       setExportError(null);
+      pushToast({
+        kind: 'success',
+        title: `Editor ${editorFieldLabel(field)} updated`,
+        detail: `${editorSelection.sourceFile} changed and is ready to export.`,
+      });
     } catch (err) {
-      setEditorError(err instanceof Error ? err.message : String(err));
+      const detail = err instanceof Error ? err.message : String(err);
+      setEditorError(detail);
+      pushToast({
+        kind: 'warning',
+        title: `Couldn't update editor ${editorFieldLabel(field)}`,
+        detail,
+      });
     } finally {
       setEditorBusy(false);
     }
-  }, [project, editorBusy, editorSelection]);
+  }, [project, editorBusy, editorSelection, pushToast]);
 
   const handleApplyEditorImageFile = useCallback(async (file: File) => {
     if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'image') return;
@@ -2316,6 +2344,12 @@ export default function App() {
             src: typeof payload.src === 'string' ? payload.src : undefined,
             alt: typeof payload.alt === 'string' ? payload.alt : undefined,
             href: typeof payload.href === 'string' ? payload.href : undefined,
+            elementId: typeof payload.elementId === 'string' ? payload.elementId : undefined,
+            className: typeof payload.className === 'string' ? payload.className : undefined,
+            style: typeof payload.style === 'string' ? payload.style : undefined,
+            sourceStart: typeof payload.sourceStart === 'number' ? payload.sourceStart : undefined,
+            sourceEnd: typeof payload.sourceEnd === 'number' ? payload.sourceEnd : undefined,
+            hasElementChildren: typeof payload.hasElementChildren === 'boolean' ? payload.hasElementChildren : undefined,
             selectorHint: typeof payload.selectorHint === 'string' ? payload.selectorHint : undefined,
           });
           setEditorError(null);
@@ -2325,7 +2359,16 @@ export default function App() {
         return;
       }
       if (type === TEXT_EDIT_MESSAGE_TYPE) {
-        const payload = data as { sourceFile?: unknown; oldText?: unknown; newText?: unknown };
+        const payload = data as {
+          sourceFile?: unknown;
+          oldText?: unknown;
+          newText?: unknown;
+          tagName?: unknown;
+          label?: unknown;
+          sourceStart?: unknown;
+          sourceEnd?: unknown;
+          selectorHint?: unknown;
+        };
         if (
           typeof payload.sourceFile === 'string' &&
           typeof payload.oldText === 'string' &&
@@ -2335,6 +2378,11 @@ export default function App() {
             sourceFile: payload.sourceFile,
             oldText: payload.oldText,
             newText: payload.newText,
+            tagName: typeof payload.tagName === 'string' ? payload.tagName : undefined,
+            label: typeof payload.label === 'string' ? payload.label : undefined,
+            sourceStart: typeof payload.sourceStart === 'number' ? payload.sourceStart : undefined,
+            sourceEnd: typeof payload.sourceEnd === 'number' ? payload.sourceEnd : undefined,
+            selectorHint: typeof payload.selectorHint === 'string' ? payload.selectorHint : undefined,
           });
         }
         return;
@@ -2578,7 +2626,7 @@ export default function App() {
               editorBusy={editorBusy}
               editorError={editorError}
               onApplyEditorText={(value) => void handleApplyEditorText(value)}
-              onApplyEditorImageUrl={(value) => void handleApplyEditorImageUrl(value)}
+              onApplyEditorField={(field, value) => void handleApplyEditorField(field, value)}
               onApplyEditorImageFile={(file) => void handleApplyEditorImageFile(file)}
               onClearEditorSelection={handleClearEditorSelection}
             />
@@ -2999,6 +3047,70 @@ function isAppliedPatch(value: unknown): value is AppliedPatch {
   return isObjectRecord(value)
     && typeof value.id === 'string'
     && typeof value.action === 'string';
+}
+
+type EditableEditorField = Exclude<EditorEditField, 'text'>;
+
+function editorFieldValue(selection: EditorSelection, field: EditableEditorField): string {
+  switch (field) {
+    case 'src':
+      return selection.src ?? '';
+    case 'alt':
+      return selection.alt ?? '';
+    case 'href':
+      return selection.href ?? '';
+    case 'class':
+      return selection.className ?? '';
+    case 'style':
+      return selection.style ?? '';
+  }
+}
+
+function updateEditorSelectionField(
+  selection: EditorSelection | null,
+  field: EditableEditorField,
+  value: string,
+): EditorSelection | null {
+  if (!selection) return selection;
+  switch (field) {
+    case 'src':
+      return selection.kind === 'image'
+        ? { ...selection, src: value, label: selection.alt || value.split(/[/?#]/).filter(Boolean).pop() || 'Image' }
+        : selection;
+    case 'alt':
+      return selection.kind === 'image'
+        ? { ...selection, alt: value, label: value || selection.src?.split(/[/?#]/).filter(Boolean).pop() || 'Image' }
+        : selection;
+    case 'href':
+      return { ...selection, href: value };
+    case 'class':
+      return { ...selection, className: value, selectorHint: buildSelectorHint(selection.tagName, selection.elementId, value) };
+    case 'style':
+      return { ...selection, style: value };
+  }
+}
+
+function editorFieldLabel(field: EditableEditorField): string {
+  switch (field) {
+    case 'src':
+      return 'image source';
+    case 'alt':
+      return 'alt text';
+    case 'href':
+      return 'link';
+    case 'class':
+      return 'classes';
+    case 'style':
+      return 'inline style';
+  }
+}
+
+function buildSelectorHint(tagName: string, id: string | undefined, className: string): string {
+  let out = tagName.toLowerCase();
+  if (id) out += `#${id}`;
+  const classes = className.trim().split(/\s+/).filter(Boolean).slice(0, 3);
+  if (classes.length > 0) out += `.${classes.join('.')}`;
+  return out;
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {

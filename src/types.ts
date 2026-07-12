@@ -163,6 +163,14 @@ export interface ImageDetection {
  * Editing / replacement
  * --------------------------------------------------------------------------*/
 
+export type EditorEditField = 'text' | 'src' | 'alt' | 'href' | 'class' | 'style';
+
+export interface EditorAppliedEdit {
+  field: EditorEditField;
+  oldValue: string;
+  newValue: string;
+}
+
 /**
  * An applied patch against a detected image reference. The `id` is stable
  * across re-applies so the UI can show "Applied" status without forking the
@@ -312,6 +320,23 @@ export type AppliedPatch =
       /** Convenience: files touched (== modifiedFiles.length). */
       filesTouched: number;
       appliedAt: number;
+    }
+  | {
+      id: string;
+      action: 'editor-edit';
+      sourceFile: string;
+      target: {
+        kind: 'text' | 'image';
+        tagName: string;
+        label: string;
+        selectorHint?: string;
+        sourceStart?: number;
+        sourceEnd?: number;
+      };
+      edits: EditorAppliedEdit[];
+      appliedAt: number;
+      previousSourceText: string;
+      currentSourceText: string;
     };
 
 /* ----------------------------------------------------------------------------

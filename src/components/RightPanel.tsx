@@ -18,6 +18,7 @@ import { formatBytes } from '../lib/fileTypes';
 import { FitStylePanel } from './FitStylePanel';
 import type {
   AppliedPatch,
+  EditorEditField,
   ExportState,
   ExportSummary,
   ImageDetection,
@@ -73,7 +74,7 @@ interface RightPanelProps {
   editorBusy: boolean;
   editorError: string | null;
   onApplyEditorText: (value: string) => void;
-  onApplyEditorImageUrl: (value: string) => void;
+  onApplyEditorField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
   onApplyEditorImageFile: (file: File) => void;
   onClearEditorSelection: () => void;
   exportState: ExportState;
@@ -98,7 +99,7 @@ export function RightPanel({
   onApplyFitStyle, onResetFitStyle,
   webpReencodeEnabled, onToggleWebpReencode,
   mode, editorSelection, editorBusy, editorError,
-  onApplyEditorText, onApplyEditorImageUrl, onApplyEditorImageFile, onClearEditorSelection,
+  onApplyEditorText, onApplyEditorField, onApplyEditorImageFile, onClearEditorSelection,
   exportState, exportSummary, exportError, canExport, onExport, onExportAgain,
 }: RightPanelProps) {
   const broken = selectedDetection ? isBroken(selectedDetection) : false;
@@ -114,7 +115,7 @@ export function RightPanel({
           busy={editorBusy}
           error={editorError}
           onApplyText={onApplyEditorText}
-          onApplyImageUrl={onApplyEditorImageUrl}
+          onApplyField={onApplyEditorField}
           onApplyImageFile={onApplyEditorImageFile}
           onClear={onClearEditorSelection}
         />
@@ -210,7 +211,7 @@ interface EditorInspectorProps {
   busy: boolean;
   error: string | null;
   onApplyText: (value: string) => void;
-  onApplyImageUrl: (value: string) => void;
+  onApplyField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
   onApplyImageFile: (file: File) => void;
   onClear: () => void;
 }
@@ -220,17 +221,25 @@ function EditorInspector({
   busy,
   error,
   onApplyText,
-  onApplyImageUrl,
+  onApplyField,
   onApplyImageFile,
   onClear,
 }: EditorInspectorProps) {
   const [textDraft, setTextDraft] = useState('');
   const [srcDraft, setSrcDraft] = useState('');
+  const [altDraft, setAltDraft] = useState('');
+  const [hrefDraft, setHrefDraft] = useState('');
+  const [classDraft, setClassDraft] = useState('');
+  const [styleDraft, setStyleDraft] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setTextDraft(selection?.text ?? '');
     setSrcDraft(selection?.src ?? '');
+    setAltDraft(selection?.alt ?? '');
+    setHrefDraft(selection?.href ?? '');
+    setClassDraft(selection?.className ?? '');
+    setStyleDraft(selection?.style ?? '');
   }, [selection]);
 
   const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -278,7 +287,7 @@ function EditorInspector({
           </dl>
 
           {selection.kind === 'text' ? (
-            <div className="space-y-2" data-testid="editor-text-controls">
+            <div className="space-y-3" data-testid="editor-text-controls">
               <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
                 Text
                 <textarea
@@ -299,39 +308,40 @@ function EditorInspector({
               >
                 {busy ? 'Applying…' : selection.tagName === 'button' ? 'Update button' : 'Update text'}
               </button>
+              {(selection.tagName === 'a' || selection.href !== undefined) && (
+                <EditorInputControl
+                  label="Link URL"
+                  value={hrefDraft}
+                  currentValue={selection.href ?? ''}
+                  onChange={setHrefDraft}
+                  onApply={() => onApplyField('href', hrefDraft)}
+                  disabled={busy || hrefDraft.trim().length === 0}
+                  mono
+                  testId="editor-link-href"
+                />
+              )}
             </div>
           ) : (
             <div className="space-y-3" data-testid="editor-image-controls">
-              <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                Image source
-                <input
-                  value={srcDraft}
-                  onChange={(event) => setSrcDraft(event.target.value)}
-                  className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-100 outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30"
-                  data-testid="editor-image-src-input"
-                />
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => onApplyImageUrl(srcDraft)}
-                  disabled={busy || srcDraft.trim() === (selection.src ?? '').trim() || srcDraft.trim().length === 0}
-                  aria-busy={busy}
-                  className="rounded-md bg-violet-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-                  data-testid="editor-apply-image-url"
-                >
-                  {busy ? 'Applying…' : 'Update source'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={busy}
-                  className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
-                  data-testid="editor-pick-image"
-                >
-                  Replace file
-                </button>
-              </div>
+              <EditorInputControl
+                label="Image source"
+                value={srcDraft}
+                currentValue={selection.src ?? ''}
+                onChange={setSrcDraft}
+                onApply={() => onApplyField('src', srcDraft)}
+                disabled={busy || srcDraft.trim().length === 0}
+                mono
+                testId="editor-image-src"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy}
+                className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="editor-pick-image"
+              >
+                Replace file
+              </button>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -340,13 +350,41 @@ function EditorInspector({
                 className="hidden"
                 data-testid="editor-image-file-input"
               />
-              {selection.alt && (
-                <p className="rounded-md border border-zinc-800 bg-zinc-950/50 px-2 py-1.5 text-[11px] text-zinc-400">
-                  Alt: <span className="text-zinc-200">{selection.alt}</span>
-                </p>
-              )}
+              <EditorInputControl
+                label="Alt text"
+                value={altDraft}
+                currentValue={selection.alt ?? ''}
+                onChange={setAltDraft}
+                onApply={() => onApplyField('alt', altDraft)}
+                disabled={busy}
+                testId="editor-image-alt"
+              />
             </div>
           )}
+
+          <div className="space-y-3 border-t border-zinc-800 pt-3" data-testid="editor-advanced-controls">
+            <EditorInputControl
+              label="Classes"
+              value={classDraft}
+              currentValue={selection.className ?? ''}
+              onChange={setClassDraft}
+              onApply={() => onApplyField('class', classDraft)}
+              disabled={busy}
+              mono
+              testId="editor-class"
+            />
+            <EditorInputControl
+              label="Inline style"
+              value={styleDraft}
+              currentValue={selection.style ?? ''}
+              onChange={setStyleDraft}
+              onApply={() => onApplyField('style', styleDraft)}
+              disabled={busy}
+              mono
+              multiLine
+              testId="editor-style"
+            />
+          </div>
 
           {error && (
             <div
@@ -360,6 +398,65 @@ function EditorInspector({
         </div>
       )}
     </section>
+  );
+}
+
+interface EditorInputControlProps {
+  label: string;
+  value: string;
+  currentValue: string;
+  onChange: (value: string) => void;
+  onApply: () => void;
+  disabled: boolean;
+  mono?: boolean;
+  multiLine?: boolean;
+  testId: string;
+}
+
+function EditorInputControl({
+  label,
+  value,
+  currentValue,
+  onChange,
+  onApply,
+  disabled,
+  mono = false,
+  multiLine = false,
+  testId,
+}: EditorInputControlProps) {
+  const dirty = value.trim() !== currentValue.trim();
+  const inputCls = `mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30 ${mono ? 'font-mono' : ''}`;
+  return (
+    <div className="space-y-2">
+      <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+        {label}
+        {multiLine ? (
+          <textarea
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            rows={3}
+            className={`${inputCls} min-h-20 resize-y`}
+            data-testid={`${testId}-input`}
+          />
+        ) : (
+          <input
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            className={inputCls}
+            data-testid={`${testId}-input`}
+          />
+        )}
+      </label>
+      <button
+        type="button"
+        onClick={onApply}
+        disabled={disabled || !dirty}
+        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
+        data-testid={`${testId}-apply`}
+      >
+        Apply {label.toLowerCase()}
+      </button>
+    </div>
   );
 }
 

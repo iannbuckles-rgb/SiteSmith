@@ -70,7 +70,7 @@ export function ChangeHistoryPanel({
     <div className="flex h-full min-h-0 flex-col gap-3" data-testid="history-panel">
       <Toolbar
         canUndoLast={sorted.length > 0}
-        canResetSelected={hasSelectedDetection && sorted.some((p) => p.action !== 'manual-replace')}
+        canResetSelected={hasSelectedDetection && sorted.some((p) => p.action !== 'manual-replace' && p.action !== 'editor-edit')}
         onUndoLastChange={onUndoLastChange}
         onUndoAll={onUndoAll}
         onResetSelectedImage={onResetSelectedImage}
@@ -382,7 +382,7 @@ function HistoryRow({ patch, onUndo }: HistoryRowProps) {
  * others in the meta.extra string — they don't all fit on one diff card).
  */
 function sourceTextPairFor(patch: AppliedPatch): { before: string; after: string } | null {
-  if (patch.action === 'replace' || patch.action === 'fit-style' || patch.action === 'remove' || patch.action === 'placeholder') {
+  if (patch.action === 'replace' || patch.action === 'fit-style' || patch.action === 'remove' || patch.action === 'placeholder' || patch.action === 'editor-edit') {
     return { before: patch.previousSourceText, after: patch.currentSourceText };
   }
   if (patch.action === 'manual-replace' && patch.modifiedFiles.length > 0) {
@@ -464,7 +464,24 @@ function describePatch(patch: AppliedPatch): PatchMeta {
             : ''),
       };
     }
+    case 'editor-edit': {
+      const first = patch.edits[0];
+      const oldValue = first ? clipForMeta(first.oldValue) : '';
+      const newValue = first ? clipForMeta(first.newValue) : '';
+      return {
+        actionType: 'Editor edit',
+        actionTone: 'border-sky-700/40 bg-sky-950/30 text-sky-200',
+        file: patch.sourceFile,
+        oldPath: first ? `${first.field}: "${oldValue}"` : '',
+        newPath: first ? `${first.field}: "${newValue}"` : '',
+        extra: `${patch.target.selectorHint ?? patch.target.tagName} · ${patch.edits.length} field${patch.edits.length === 1 ? '' : 's'}`,
+      };
+    }
   }
+}
+
+function clipForMeta(text: string): string {
+  return text.length <= 80 ? text : text.slice(0, 77) + '\u2026';
 }
 
 function formatTimestamp(appliedAt: number): string {

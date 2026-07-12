@@ -31,6 +31,12 @@ export interface EditorSelection {
   kind: EditorSelectionKind;
   tagName: string;
   label: string;
+  sourceStart?: number;
+  sourceEnd?: number;
+  elementId?: string;
+  className?: string;
+  style?: string;
+  hasElementChildren?: boolean;
   text?: string;
   src?: string;
   alt?: string;

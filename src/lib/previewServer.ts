@@ -294,6 +294,7 @@ function previewHeaders(contentType: string): Record<string, string> {
 export function augmentHtml(html: string, sourcePath: string): string {
   if (/data-mockswap-preview/.test(html)) return html;
 
+  const instrumentedHtml = instrumentEditableMarkup(html);
   const srcLiteral = escapeForScript(sourcePath);
   const navType = escapeForScript(NAV_MESSAGE_TYPE);
   const editType = escapeForScript(TEXT_EDIT_MESSAGE_TYPE);
@@ -334,11 +335,12 @@ export function augmentHtml(html: string, sourcePath: string): string {
     'function clean(value){return String(value||"").replace(/\\s+/g," ").trim();}',
     'function hint(el){var s=el.tagName.toLowerCase();if(el.id)s+="#"+el.id;if(el.className&&typeof el.className==="string")s+="."+el.className.trim().split(/\\s+/).slice(0,3).join(".");return s;}',
     'function baseName(value){value=String(value||"").split(/[?#]/)[0];var parts=value.split("/");return parts[parts.length-1]||value||"Image";}',
-    'function selectElement(el){if(!el)return;var old=document.querySelector("[data-mockswap-selected]");if(old&&old!==el)old.removeAttribute("data-mockswap-selected");el.setAttribute("data-mockswap-selected","true");var isImage=el.tagName&&el.tagName.toLowerCase()==="img";var src=isImage?(el.getAttribute("src")||""):undefined;var text=isImage?undefined:clean(el.textContent);var label=isImage?((el.getAttribute("alt")||baseName(src)).trim()||"Image"):(text||el.tagName.toLowerCase());try{window.parent.postMessage({type:__selectType,sourceFile:__src,kind:isImage?"image":"text",tagName:el.tagName.toLowerCase(),label:label,text:text,src:src,alt:isImage?(el.getAttribute("alt")||""):undefined,href:el.getAttribute("href")||undefined,selectorHint:hint(el)},"*");}catch(_){}}',
+    'function numAttr(el,n){var v=el.getAttribute(n);if(v==null)return undefined;var x=Number(v);return Number.isFinite(x)?x:undefined;}',
+    'function selectElement(el){if(!el)return;var old=document.querySelector("[data-mockswap-selected]");if(old&&old!==el)old.removeAttribute("data-mockswap-selected");el.setAttribute("data-mockswap-selected","true");var isImage=el.tagName&&el.tagName.toLowerCase()==="img";var src=isImage?(el.getAttribute("src")||""):undefined;var text=isImage?undefined:clean(el.textContent);var label=isImage?((el.getAttribute("alt")||baseName(src)).trim()||"Image"):(text||el.tagName.toLowerCase());try{window.parent.postMessage({type:__selectType,sourceFile:__src,kind:isImage?"image":"text",tagName:el.tagName.toLowerCase(),label:label,text:text,src:src,alt:isImage?(el.getAttribute("alt")||""):undefined,href:el.getAttribute("href")||undefined,elementId:el.getAttribute("id")||undefined,className:typeof el.className==="string"?el.className:undefined,style:el.getAttribute("style")||"",sourceStart:numAttr(el,"data-mockswap-source-start"),sourceEnd:numAttr(el,"data-mockswap-source-end"),hasElementChildren:!!el.querySelector("*"),selectorHint:hint(el)},"*");}catch(_){}}',
     'document.addEventListener("mouseover",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(el)el.setAttribute("data-mockswap-hover","true");},true);',
     'document.addEventListener("mouseout",function(e){var el=e.target;if(el&&el.nodeType===1&&el.removeAttribute)el.removeAttribute("data-mockswap-hover");},true);',
     'document.addEventListener("click",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(!el)return;e.preventDefault();e.stopPropagation();selectElement(el);},true);',
-    'function commit(el){if(!el||!el.__mockswapEditing)return;var oldText=el.__mockswapOldText||"";var nextText=clean(el.textContent);el.contentEditable="false";el.removeAttribute("data-mockswap-editing");el.__mockswapEditing=false;if(!nextText||nextText===oldText){el.textContent=oldText;return;}el.textContent=nextText;try{window.parent.postMessage({type:__editType,sourceFile:__src,oldText:oldText,newText:nextText},"*");}catch(_){}}',
+    'function commit(el){if(!el||!el.__mockswapEditing)return;var oldText=el.__mockswapOldText||"";var nextText=clean(el.textContent);el.contentEditable="false";el.removeAttribute("data-mockswap-editing");el.__mockswapEditing=false;if(!nextText||nextText===oldText){el.textContent=oldText;return;}el.textContent=nextText;try{window.parent.postMessage({type:__editType,sourceFile:__src,oldText:oldText,newText:nextText,tagName:el.tagName.toLowerCase(),label:oldText,sourceStart:numAttr(el,"data-mockswap-source-start"),sourceEnd:numAttr(el,"data-mockswap-source-end"),selectorHint:hint(el)},"*");}catch(_){}}',
     'window.addEventListener("message",function(e){var d=e.data;if(!d||typeof d!=="object"||d.type!==__editModeType)return;window.__mockswapTextEditEnabled=!!d.enabled;document.documentElement.toggleAttribute("data-mockswap-text-edit",window.__mockswapTextEditEnabled);if(!window.__mockswapTextEditEnabled){var editing=document.querySelector("[data-mockswap-editing]");if(editing)commit(editing);var selected=document.querySelector("[data-mockswap-selected]");if(selected)selected.removeAttribute("data-mockswap-selected");}});',
     'document.addEventListener("dblclick",function(e){if(!window.__mockswapTextEditEnabled)return;var el=textTarget(e.target);if(!el)return;e.preventDefault();e.stopPropagation();var active=document.querySelector("[data-mockswap-editing]");if(active&&active!==el)commit(active);el.__mockswapOldText=clean(el.textContent);if(!el.__mockswapOldText)return;el.__mockswapEditing=true;el.setAttribute("data-mockswap-editing","true");el.contentEditable="true";el.focus();try{var r=document.createRange();r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}catch(_){}},true);',
     'document.addEventListener("focusout",function(e){var el=e.target;if(el&&el.__mockswapEditing)setTimeout(function(){commit(el);},0);},true);',
@@ -349,10 +351,111 @@ export function augmentHtml(html: string, sourcePath: string): string {
 
   const scriptTag = '<script data-mockswap-preview>' + body + '</script>';
   const headRe = /<head\b[^>]*>/i;
-  if (headRe.test(html)) return html.replace(headRe, (m) => m + scriptTag);
+  if (headRe.test(instrumentedHtml)) return instrumentedHtml.replace(headRe, (m) => m + scriptTag);
   const htmlRe = /<html\b[^>]*>/i;
-  if (htmlRe.test(html)) return html.replace(htmlRe, (m) => m + scriptTag);
-  return scriptTag + html;
+  if (htmlRe.test(instrumentedHtml)) return instrumentedHtml.replace(htmlRe, (m) => m + scriptTag);
+  return scriptTag + instrumentedHtml;
+}
+
+const EDITABLE_SOURCE_TAGS = new Set([
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'p', 'a', 'button', 'span', 'li', 'label', 'small',
+  'strong', 'em', 'figcaption', 'blockquote', 'img',
+]);
+
+const RAW_TEXT_TAGS = new Set(['script', 'style', 'textarea']);
+
+export function instrumentEditableMarkup(html: string): string {
+  if (/data-mockswap-source-start=/.test(html)) return html;
+  let out = '';
+  let cursor = 0;
+  let index = 0;
+
+  while (index < html.length) {
+    const start = html.indexOf('<', index);
+    if (start === -1) break;
+
+    if (html.startsWith('<!--', start)) {
+      const endComment = html.indexOf('-->', start + 4);
+      index = endComment === -1 ? html.length : endComment + 3;
+      continue;
+    }
+
+    const tag = readHtmlTagAt(html, start);
+    if (!tag) {
+      index = start + 1;
+      continue;
+    }
+
+    if (!tag.closing && RAW_TEXT_TAGS.has(tag.name)) {
+      const closeRe = new RegExp(`</\\s*${tag.name}\\s*>`, 'i');
+      const rest = html.slice(tag.end);
+      const close = rest.search(closeRe);
+      index = close === -1 ? tag.end : tag.end + close + rest.slice(close).match(closeRe)![0].length;
+      continue;
+    }
+
+    if (!tag.closing && EDITABLE_SOURCE_TAGS.has(tag.name)) {
+      const raw = html.slice(tag.start, tag.end);
+      if (!/\sdata-mockswap-source-start\s*=/.test(raw)) {
+        out += html.slice(cursor, tag.insertAt);
+        out += ` data-mockswap-source-start="${tag.start}" data-mockswap-source-end="${tag.end}"`;
+        cursor = tag.insertAt;
+      }
+    }
+
+    index = tag.end;
+  }
+
+  if (cursor === 0) return html;
+  return out + html.slice(cursor);
+}
+
+function readHtmlTagAt(source: string, start: number): null | {
+  start: number;
+  end: number;
+  insertAt: number;
+  name: string;
+  closing: boolean;
+} {
+  if (source[start] !== '<') return null;
+  const next = source[start + 1];
+  if (!next || next === '!' || next === '?') return null;
+  let pos = start + 1;
+  let closing = false;
+  if (source[pos] === '/') {
+    closing = true;
+    pos += 1;
+  }
+  while (/\s/.test(source[pos] ?? '')) pos += 1;
+  const nameStart = pos;
+  while (/[A-Za-z0-9:-]/.test(source[pos] ?? '')) pos += 1;
+  if (pos === nameStart) return null;
+  const name = source.slice(nameStart, pos).toLowerCase();
+  const closeAt = findHtmlTagEnd(source, pos);
+  if (closeAt === -1) return null;
+  let insertAt = closeAt;
+  let before = closeAt - 1;
+  while (before > start && /\s/.test(source[before] ?? '')) before -= 1;
+  if (source[before] === '/') insertAt = before;
+  return { start, end: closeAt + 1, insertAt, name, closing };
+}
+
+function findHtmlTagEnd(source: string, start: number): number {
+  let quote: string | null = null;
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '>') return i;
+  }
+  return -1;
 }
 
 /**

@@ -382,6 +382,30 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
     }
   }
 
+  const editorPatches = patches.filter(
+    (p): p is Extract<AppliedPatch, { action: 'editor-edit' }> =>
+      p.action === 'editor-edit',
+  ).sort((a, b) => b.appliedAt - a.appliedAt);
+  if (editorPatches.length > 0) {
+    lines.push('## Direct editor edits', '');
+    lines.push(
+      `${editorPatches.length} inline editor edit${editorPatches.length === 1 ? '' : 's'} applied from the live preview. These are targeted source edits against selected text, links, image attributes, classes, or inline styles.`,
+      '',
+    );
+    for (const p of editorPatches) {
+      const at = new Date(p.appliedAt).toISOString();
+      const target = p.target.selectorHint ?? p.target.tagName;
+      lines.push(`### \`${p.sourceFile}\``, '');
+      lines.push(`- **Target**: \`${target}\` (${p.target.kind})`);
+      lines.push('- **Fields changed**:');
+      for (const edit of p.edits) {
+        lines.push(`  - \`${edit.field}\`: \`${reportInline(edit.oldValue)}\` → \`${reportInline(edit.newValue)}\``);
+      }
+      lines.push(`- **Applied at**: ${at}`);
+      lines.push('');
+    }
+  }
+
   // Manual Replacements section. Pulled BEFORE Logo Helper because the
   // audit audience reads \"what the user manually rewrote\" before the
   // \"what the Logo Helper bulk-applied\". A single manual-replace patch
@@ -483,6 +507,12 @@ function sortByFile(detections: ImageDetection[]): ImageDetection[] {
     if (f !== 0) return f;
     return a.rawUrl.localeCompare(b.rawUrl);
   });
+}
+
+function reportInline(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const clipped = normalized.length > 140 ? normalized.slice(0, 137) + '...' : normalized;
+  return clipped.replace(/`/g, '\u2018');
 }
 
 /** Best-effort role hint pulled from a Logo Helper candidate's id; used

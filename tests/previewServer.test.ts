@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { choosePrimaryHtml } from '../src/lib/previewService';
-import { augmentHtml, deriveSiteRoot, previewUrl, servedPreviewPath } from '../src/lib/previewServer';
+import { augmentHtml, deriveSiteRoot, instrumentEditableMarkup, previewUrl, servedPreviewPath } from '../src/lib/previewServer';
 
 describe('previewService.choosePrimaryHtml', () => {
   it('prefers a root index over nested route indexes', () => {
@@ -89,9 +89,20 @@ describe('previewServer.augmentHtml', () => {
     expect(out).toContain('mockswap:set-edit-mode');
     expect(out).toContain('mockswap:text-edit');
     expect(out).toContain('mockswap:select-element');
+    expect(out).toContain('sourceStart');
+    expect(out).toContain('className');
     expect(out).toContain('contentEditable');
     expect(out).toContain('data-mockswap-editing');
     expect(out).toContain('data-mockswap-selected');
+  });
+
+  it('instruments editable elements with source ranges before serving', () => {
+    const html = '<main><h1>Hello</h1><script>var x="<h1>skip</h1>";</script><img src="hero.png"></main>';
+    const out = instrumentEditableMarkup(html);
+    expect(out).toContain('data-mockswap-source-start="6"');
+    expect(out).toContain('data-mockswap-source-end="10"');
+    expect(out).toMatch(/<img src="hero\.png" data-mockswap-source-start="\d+" data-mockswap-source-end="\d+">/);
+    expect(out).not.toContain('skip</h1>" data-mockswap-source-start');
   });
 
   it('is idempotent — never double-injects', () => {
