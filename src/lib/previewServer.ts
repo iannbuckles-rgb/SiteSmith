@@ -33,6 +33,9 @@ const PREVIEW_PREFIX = '/preview/';
 
 /** postMessage type shared with the app's iframe navigation listener. */
 const NAV_MESSAGE_TYPE = 'mockswap:navigate';
+const TEXT_EDIT_MESSAGE_TYPE = 'mockswap:text-edit';
+const SELECT_MESSAGE_TYPE = 'mockswap:select-element';
+const SET_EDIT_MODE_MESSAGE_TYPE = 'mockswap:set-edit-mode';
 
 /** True when the Service Worker preview server can run in this context. */
 export function previewServerSupported(): boolean {
@@ -283,6 +286,9 @@ function previewHeaders(contentType: string): Record<string, string> {
  *   2. Nav bridge — forwards in-page `<a href>` clicks to relative pages up to
  *      the app so the page dropdown / history stay in sync, mirroring the blob
  *      pipeline's protocol.
+ *   3. Text edit bridge — when the parent enables edit mode, double-clicking a
+ *      text element makes it editable in-place and reports the literal text
+ *      delta back to the app for a real zip mutation.
  * -------------------------------------------------------------------------*/
 
 export function augmentHtml(html: string, sourcePath: string): string {
@@ -290,6 +296,9 @@ export function augmentHtml(html: string, sourcePath: string): string {
 
   const srcLiteral = escapeForScript(sourcePath);
   const navType = escapeForScript(NAV_MESSAGE_TYPE);
+  const editType = escapeForScript(TEXT_EDIT_MESSAGE_TYPE);
+  const selectType = escapeForScript(SELECT_MESSAGE_TYPE);
+  const editModeType = escapeForScript(SET_EDIT_MODE_MESSAGE_TYPE);
   const body = [
     '(function(){',
     // --- storage shim ---
@@ -306,8 +315,9 @@ export function augmentHtml(html: string, sourcePath: string): string {
     'if(!ok){try{Object.defineProperty(window,n,{configurable:true,value:mem()});}catch(e){}}',
     '})(names[i]);}',
     // --- nav bridge ---
-    'var __src=' + srcLiteral + ';var __type=' + navType + ';',
+    'var __src=' + srcLiteral + ';var __type=' + navType + ';var __editType=' + editType + ';var __selectType=' + selectType + ';var __editModeType=' + editModeType + ';',
     'document.addEventListener("click",function(e){',
+    'if(window.__mockswapTextEditEnabled)return;',
     'var t=e.target;while(t&&t.nodeType!==9&&t.nodeName!=="A"){t=t.parentNode;}',
     'if(!t||t.nodeName!=="A")return;var h=t.getAttribute("href");if(!h)return;',
     'if(/^(https?:|mailto:|tel:|javascript:|data:|\\/\\/|blob:|#)/i.test(h))return;',
@@ -315,6 +325,25 @@ export function augmentHtml(html: string, sourcePath: string): string {
     'e.preventDefault();e.stopPropagation();',
     'try{window.parent.postMessage({type:__type,href:h,sourceFile:__src},"*");}catch(_){}',
     '},true);',
+    // --- direct text editing bridge ---
+    'window.__mockswapTextEditEnabled=false;',
+    'var textSelector="h1,h2,h3,h4,h5,h6,p,a,button,span,li,label,small,strong,em,figcaption,blockquote";',
+    'var selectableSelector=textSelector+",img";',
+    'function textTarget(node){var el=node&&node.nodeType===1?node:node&&node.parentElement;while(el&&el.nodeType===1){if(el.matches&&el.matches(textSelector)&&((el.textContent||"").trim()))return el;if(el===document.body)break;el=el.parentElement;}return null;}',
+    'function selectTarget(node){var el=node&&node.nodeType===1?node:node&&node.parentElement;while(el&&el.nodeType===1){if(el.matches&&el.matches("img"))return el;if(el.matches&&el.matches(textSelector)&&((el.textContent||"").trim()))return el;if(el===document.body)break;el=el.parentElement;}return null;}',
+    'function clean(value){return String(value||"").replace(/\\s+/g," ").trim();}',
+    'function hint(el){var s=el.tagName.toLowerCase();if(el.id)s+="#"+el.id;if(el.className&&typeof el.className==="string")s+="."+el.className.trim().split(/\\s+/).slice(0,3).join(".");return s;}',
+    'function baseName(value){value=String(value||"").split(/[?#]/)[0];var parts=value.split("/");return parts[parts.length-1]||value||"Image";}',
+    'function selectElement(el){if(!el)return;var old=document.querySelector("[data-mockswap-selected]");if(old&&old!==el)old.removeAttribute("data-mockswap-selected");el.setAttribute("data-mockswap-selected","true");var isImage=el.tagName&&el.tagName.toLowerCase()==="img";var src=isImage?(el.getAttribute("src")||""):undefined;var text=isImage?undefined:clean(el.textContent);var label=isImage?((el.getAttribute("alt")||baseName(src)).trim()||"Image"):(text||el.tagName.toLowerCase());try{window.parent.postMessage({type:__selectType,sourceFile:__src,kind:isImage?"image":"text",tagName:el.tagName.toLowerCase(),label:label,text:text,src:src,alt:isImage?(el.getAttribute("alt")||""):undefined,href:el.getAttribute("href")||undefined,selectorHint:hint(el)},"*");}catch(_){}}',
+    'document.addEventListener("mouseover",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(el)el.setAttribute("data-mockswap-hover","true");},true);',
+    'document.addEventListener("mouseout",function(e){var el=e.target;if(el&&el.nodeType===1&&el.removeAttribute)el.removeAttribute("data-mockswap-hover");},true);',
+    'document.addEventListener("click",function(e){if(!window.__mockswapTextEditEnabled)return;var el=selectTarget(e.target);if(!el)return;e.preventDefault();e.stopPropagation();selectElement(el);},true);',
+    'function commit(el){if(!el||!el.__mockswapEditing)return;var oldText=el.__mockswapOldText||"";var nextText=clean(el.textContent);el.contentEditable="false";el.removeAttribute("data-mockswap-editing");el.__mockswapEditing=false;if(!nextText||nextText===oldText){el.textContent=oldText;return;}el.textContent=nextText;try{window.parent.postMessage({type:__editType,sourceFile:__src,oldText:oldText,newText:nextText},"*");}catch(_){}}',
+    'window.addEventListener("message",function(e){var d=e.data;if(!d||typeof d!=="object"||d.type!==__editModeType)return;window.__mockswapTextEditEnabled=!!d.enabled;document.documentElement.toggleAttribute("data-mockswap-text-edit",window.__mockswapTextEditEnabled);if(!window.__mockswapTextEditEnabled){var editing=document.querySelector("[data-mockswap-editing]");if(editing)commit(editing);var selected=document.querySelector("[data-mockswap-selected]");if(selected)selected.removeAttribute("data-mockswap-selected");}});',
+    'document.addEventListener("dblclick",function(e){if(!window.__mockswapTextEditEnabled)return;var el=textTarget(e.target);if(!el)return;e.preventDefault();e.stopPropagation();var active=document.querySelector("[data-mockswap-editing]");if(active&&active!==el)commit(active);el.__mockswapOldText=clean(el.textContent);if(!el.__mockswapOldText)return;el.__mockswapEditing=true;el.setAttribute("data-mockswap-editing","true");el.contentEditable="true";el.focus();try{var r=document.createRange();r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r);}catch(_){}},true);',
+    'document.addEventListener("focusout",function(e){var el=e.target;if(el&&el.__mockswapEditing)setTimeout(function(){commit(el);},0);},true);',
+    'document.addEventListener("keydown",function(e){var el=e.target;if(!el||!el.__mockswapEditing)return;if(e.key==="Escape"){e.preventDefault();el.textContent=el.__mockswapOldText||"";commit(el);}else if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();commit(el);}},true);',
+    'try{var st=document.createElement("style");st.setAttribute("data-mockswap-edit-style","");st.textContent="html[data-mockswap-text-edit] "+selectableSelector.split(",").join(",html[data-mockswap-text-edit] ")+"{cursor:crosshair!important} [data-mockswap-hover]{outline:1px dashed #a78bfa!important;outline-offset:2px!important} [data-mockswap-selected],[data-mockswap-editing]{outline:2px solid #8b5cf6!important;outline-offset:2px!important;box-shadow:0 0 0 4px rgba(139,92,246,.18)!important}";document.head&&document.head.appendChild(st);}catch(_){}',
     '})();',
   ].join('');
 

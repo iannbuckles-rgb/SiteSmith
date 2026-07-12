@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyPlaceholder, applyRemove, applyReplacement } from '../src/lib/assetReplacer';
+import {
+  applyPlaceholder,
+  applyRemove,
+  applyReplacement,
+  canPlaceholder,
+  canRemove,
+  canReplace,
+} from '../src/lib/assetReplacer';
 import { undoPatchById } from '../src/lib/undoStack';
-import type { AppliedPatch, LoadedProject } from '../src/types';
+import type { AppliedPatch, ImageDetection, LoadedProject } from '../src/types';
 import {
   cssUrlDetection,
   htmlImgDetection,
@@ -65,6 +72,51 @@ describe('assetReplacer applyReplacement', () => {
     expect(html).toContain('<!-- Builder backup: <img src="images/hero.png" alt="Old hero"> -->');
     expect(html).toContain('title="2 > 1 badge"');
     expect(html).toContain('src="./assets/mockups/hero-replacement.png"');
+    await expectUndoRestores(project, patch, 'index.html', source);
+  });
+
+  it('rewrites icon link hrefs without touching non-icon links', async () => {
+    const source = [
+      '<head>',
+      '<link rel="stylesheet" href="/favicon.ico">',
+      '<link rel="icon" href="/favicon.ico" sizes="32x32" type="image/x-icon">',
+      '<link rel="apple-touch-icon" href="/touch.png">',
+      '</head>',
+    ].join('');
+    const project = makeProject({
+      'index.html': source,
+      'favicon.ico': new Uint8Array([0]),
+      'touch.png': new Uint8Array([1]),
+    });
+    const detection: ImageDetection = {
+      rawUrl: '/favicon.ico',
+      resolvedPath: 'favicon.ico',
+      type: 'favicon',
+      status: 'ok',
+      sourceKind: 'html',
+      sourceFile: 'index.html',
+      sourceTag: 'link',
+      sourceAttr: 'href',
+      extra: { rel: 'icon', sizes: '32x32' },
+    };
+
+    expect(canReplace(detection)).toBe(true);
+    expect(canRemove(detection)).toBe(false);
+    expect(canPlaceholder(detection)).toBe(false);
+
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([6, 7]),
+      filename: 'New Favicon.ICO',
+    });
+
+    const html = await zipText(project, 'index.html');
+    expect(html).toContain('<link rel="stylesheet" href="/favicon.ico">');
+    expect(html).toContain('<link rel="icon" href="./assets/mockups/new-favicon.ico" sizes="32x32" type="image/x-icon">');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/touch.png">');
+    expect(patch.sourceTag).toBe('link');
+    expect(patch.sourceAttr).toBe('href');
+    expect(patch.currentSourceValue).toBe('./assets/mockups/new-favicon.ico');
+    expect(await zipBytes(project, 'assets/mockups/new-favicon.ico')).toEqual(new Uint8Array([6, 7]));
     await expectUndoRestores(project, patch, 'index.html', source);
   });
 

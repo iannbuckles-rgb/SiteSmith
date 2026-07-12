@@ -20,6 +20,24 @@
  */
 export type PreviewViewport = 'mobile' | 'tablet' | 'desktop' | 'full';
 
+/** Top-level preview surface mode. Preview keeps the rendered site fully
+ * interactive; editor turns clicks into element selection + mutation events. */
+export type PreviewMode = 'preview' | 'editor';
+
+export type EditorSelectionKind = 'text' | 'image';
+
+export interface EditorSelection {
+  sourceFile: string;
+  kind: EditorSelectionKind;
+  tagName: string;
+  label: string;
+  text?: string;
+  src?: string;
+  alt?: string;
+  href?: string;
+  selectorHint?: string;
+}
+
 /** Per-viewport dimension table backing `mobile` / `tablet` / `desktop`.
  *  Excluded `full` because `full` follows the container, not a fixed box. */
 interface ViewportDims {

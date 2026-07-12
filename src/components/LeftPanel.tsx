@@ -115,10 +115,20 @@ export function LeftPanel({
     () => (project ? buildFileTree(project.entries) : null),
     [project],
   );
+  const modeStatus = getModeStatus({
+    mode,
+    hasProject: project !== null,
+    scanning,
+    detectionCount: detections.length,
+    logoScanning,
+    logoCount: logoCandidates.length,
+    manualChangeCount: manualReplaceRecent.length,
+    historyChangeCount: historyEntries.length,
+  });
 
   return (
-    <aside className="flex h-full min-h-0 flex-col gap-3 border-r border-zinc-800 bg-zinc-950 p-3">
-      <UploadButton onFile={onUpload} disabled={isLoading} />
+    <aside className="flex h-full min-h-0 flex-col gap-3 overflow-hidden border-r border-zinc-800 bg-zinc-950 p-3">
+      {!project && <UploadButton onFile={onUpload} disabled={isLoading} />}
 
       {error && (
         <div
@@ -151,7 +161,7 @@ export function LeftPanel({
       )}
 
       {project && (
-        <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-zinc-800 bg-zinc-900/50">
+        <section className="flex min-h-[150px] basis-2/5 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50">
           <header className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
               Files
@@ -182,24 +192,16 @@ export function LeftPanel({
       )}
 
       <section
-        className="flex min-h-0 flex-1 flex-col rounded-lg border border-zinc-800 bg-zinc-900/50"
+        className={`flex min-h-0 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50 ${project ? 'basis-3/5' : 'flex-1'}`}
         data-testid="bottom-panel"
       >
-        <header className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
+        <header className="flex min-w-0 items-center gap-2 border-b border-zinc-800 px-3 py-2">
           <ModeTabs mode={mode} onChangeMode={onChangeMode} />
-          <span className="ml-auto text-[11px] text-zinc-500">
-            {mode === 'images'
-              ? (project ? (scanning ? 'scanning…' : `${detections.length}`) : 'no project')
-              : mode === 'logos'
-                ? (project ? (logoScanning ? 'scanning…' : `${logoCandidates.length} logos`) : 'no project')
-                : mode === 'manual'
-                  ? (project ? `${manualReplaceRecent.length} change${manualReplaceRecent.length === 1 ? '' : 's'}` : 'no project')
-                  : mode === 'history'
-                    ? (project ? `${historyEntries.length} change${historyEntries.length === 1 ? '' : 's'}` : 'no project')
-                    : 'library'}
+          <span className="ml-auto shrink-0 text-[11px] text-zinc-500">
+            {modeStatus}
           </span>
         </header>
-        <div className="min-h-0 flex-1 px-2 py-2">
+        <div className="flex min-h-0 flex-1 flex-col px-2 py-2">
           {mode === 'projects' ? (
             <ProjectsPanel
               active={mode === 'projects'}
@@ -275,6 +277,33 @@ export function LeftPanel({
   );
 }
 
+function getModeStatus({
+  mode,
+  hasProject,
+  scanning,
+  detectionCount,
+  logoScanning,
+  logoCount,
+  manualChangeCount,
+  historyChangeCount,
+}: {
+  mode: LeftPanelMode;
+  hasProject: boolean;
+  scanning: boolean;
+  detectionCount: number;
+  logoScanning: boolean;
+  logoCount: number;
+  manualChangeCount: number;
+  historyChangeCount: number;
+}): string {
+  if (mode === 'projects') return 'library';
+  if (!hasProject) return 'no project';
+  if (mode === 'images') return scanning ? 'scanning...' : `${detectionCount}`;
+  if (mode === 'logos') return logoScanning ? 'scanning...' : `${logoCount} logos`;
+  const count = mode === 'manual' ? manualChangeCount : historyChangeCount;
+  return `${count} change${count === 1 ? '' : 's'}`;
+}
+
 interface ModeTabsProps {
   mode: LeftPanelMode;
   onChangeMode: (mode: LeftPanelMode) => void;
@@ -283,7 +312,7 @@ interface ModeTabsProps {
 function ModeTabs({ mode, onChangeMode }: ModeTabsProps) {
   return (
     <div
-      className="flex min-w-0 flex-wrap items-center gap-1"
+      className="flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
       role="tablist"
       aria-label="Bottom panel mode"
     >
@@ -299,7 +328,7 @@ function ModeTabs({ mode, onChangeMode }: ModeTabsProps) {
         onClick={() => onChangeMode('logos')}
         testId="bottom-mode-logos"
         icon={<SpIcon className="h-3.5 w-3.5" />}
-        label="Logo Helper"
+        label="Logos"
       />
       <ModeTab
         active={mode === 'manual'}
@@ -344,7 +373,7 @@ function ModeTab({ active, onClick, testId, icon, label }: ModeTabProps) {
       role="tab"
       aria-selected={active}
       onClick={onClick}
-      className={`flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${cls}`}
+      className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${cls}`}
       data-testid={testId}
     >
       <span className={active ? 'text-violet-200' : 'text-zinc-500'}>{icon}</span>

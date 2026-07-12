@@ -41,7 +41,7 @@
  *      disappeared".
  * -------------------------------------------------------------------------*/
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { LoadedProject } from '../types';
@@ -49,6 +49,7 @@ import type { PreviewIndex } from '../lib/previewService';
 import {
   VIEWPORT_DIMENSIONS,
   ZOOM_PRESETS,
+  type PreviewMode,
   type PreviewHistoryState,
   type PreviewViewport,
 } from '../lib/previewControls';
@@ -76,6 +77,8 @@ interface CenterPanelProps {
    *  flip `previewFullscreen` to false. */
   onExitFullscreen: () => void;
   onOpenInNewTab: () => void;
+  mode: PreviewMode;
+  onChangeMode: (mode: PreviewMode) => void;
   /** Number of AppliedPatch entries currently applied. Drawn as a
    *  small violet pill in the toolbar so the user can tell at a
    *  glance when their preview reflects work. */
@@ -91,6 +94,7 @@ export function CenterPanel({
   history, onNavigateBack, onNavigateForward,
   fullscreen, onToggleFullscreen, onExitFullscreen,
   onOpenInNewTab,
+  mode, onChangeMode,
   editCount,
 }: CenterPanelProps) {
   // ESC closes fullscreen overlay — a universal expectation for
@@ -125,6 +129,8 @@ export function CenterPanel({
       fullscreen={fullscreen}
       onToggleFullscreen={onToggleFullscreen}
       onOpenInNewTab={onOpenInNewTab}
+      mode={mode}
+      onChangeMode={onChangeMode}
       editCount={editCount}
     />
   );
@@ -139,6 +145,7 @@ export function CenterPanel({
         currentPagePath={currentPagePath}
         viewport={viewport}
         zoom={zoom}
+        mode={mode}
       />
     </div>
   );
@@ -192,6 +199,8 @@ interface PreviewToolbarProps {
   fullscreen: boolean;
   onToggleFullscreen: () => void;
   onOpenInNewTab: () => void;
+  mode: PreviewMode;
+  onChangeMode: (mode: PreviewMode) => void;
   editCount: number;
 }
 
@@ -204,6 +213,7 @@ function PreviewToolbar({
   history, onNavigateBack, onNavigateForward,
   fullscreen, onToggleFullscreen,
   onOpenInNewTab,
+  mode, onChangeMode,
   editCount,
 }: PreviewToolbarProps) {
   const hasPages = !!project && !!preview && preview.htmlPaths.length > 0;
@@ -363,6 +373,7 @@ function PreviewToolbar({
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {hasPages && (
           <>
+            <ModeSwitch mode={mode} onChangeMode={onChangeMode} />
             <IconButton
               onClick={onRefresh}
               testId="preview-refresh"
@@ -399,6 +410,73 @@ function ToolbarDivider() {
   // 1-px zinc-800 marker between groups so the eye reads them as
   // related clusters rather than one long row of buttons.
   return <span aria-hidden="true" className="hidden h-4 w-px shrink-0 bg-zinc-800 md:inline-block" />;
+}
+
+function ModeSwitch({
+  mode,
+  onChangeMode,
+}: {
+  mode: PreviewMode;
+  onChangeMode: (mode: PreviewMode) => void;
+}) {
+  return (
+    <div
+      className="mr-1 grid grid-cols-2 rounded-md border border-zinc-800 bg-zinc-950 p-0.5"
+      role="group"
+      aria-label="Preview mode"
+      data-testid="preview-mode-switch"
+    >
+      <ModeButton
+        active={mode === 'preview'}
+        label="Preview"
+        testId="mode-preview"
+        onClick={() => onChangeMode('preview')}
+      >
+        <PointerIcon />
+      </ModeButton>
+      <ModeButton
+        active={mode === 'editor'}
+        label="Editor"
+        testId="mode-editor"
+        onClick={() => onChangeMode('editor')}
+      >
+        <TextEditIcon />
+      </ModeButton>
+    </div>
+  );
+}
+
+function ModeButton({
+  active,
+  label,
+  testId,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  label: string;
+  testId: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      aria-label={`${label} mode`}
+      title={`${label} mode`}
+      onClick={onClick}
+      data-testid={testId}
+      className={`inline-flex h-7 min-w-[76px] items-center justify-center gap-1.5 rounded px-2 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 ${
+        active
+          ? 'bg-violet-600 text-white shadow-sm'
+          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+      }`}
+    >
+      {children}
+      <span>{label}</span>
+    </button>
+  );
 }
 
 interface IconButtonProps {
@@ -489,12 +567,21 @@ interface PreviewStageProps {
   currentPagePath: string;
   viewport: PreviewViewport;
   zoom: number;
+  mode: PreviewMode;
 }
 
 function PreviewStage({
   project, preview, previewBuilding, previewKey, currentPagePath,
-  viewport, zoom,
+  viewport, zoom, mode,
 }: PreviewStageProps) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  useEffect(() => {
+    const target = iframeRef.current?.contentWindow;
+    if (!target) return;
+    target.postMessage({ type: 'mockswap:set-edit-mode', enabled: mode === 'editor' }, '*');
+  }, [mode, previewKey, currentPagePath]);
+
   if (!project) {
     return (
       <div className="flex min-h-[320px] flex-1 items-center justify-center p-8">
@@ -528,8 +615,15 @@ function PreviewStage({
       <PreviewViewportFrame viewport={viewport}>
         <ZoomWrapper zoom={zoom}>
           <iframe
+            ref={iframeRef}
             key={previewKey}
             src={src}
+            onLoad={() => {
+              iframeRef.current?.contentWindow?.postMessage(
+                { type: 'mockswap:set-edit-mode', enabled: mode === 'editor' },
+                '*',
+              );
+            }}
             title={currentPagePath ? `Website preview — ${currentPagePath}` : 'Website preview'}
             // The preview is served by the MockupSwap service worker from real
             // `/preview/…` URLs so the browser resolves module imports, fetch,
@@ -688,6 +782,14 @@ function NoHtmlState() {
  * Inline svg icons
  * -------------------------------------------------------------------------*/
 
+function PointerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M4 4l7.5 16 2-6.5 6.5-2L4 4z" />
+    </svg>
+  );
+}
+
 function RefreshIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
@@ -727,6 +829,18 @@ function PopupIcon() {
       <path d="M14 3h7v7" />
       <line x1="21" y1="3" x2="10" y2="14" />
       <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+    </svg>
+  );
+}
+
+function TextEditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M4 20h4" />
+      <path d="M6 20V5" />
+      <path d="M4 5h8" />
+      <path d="M14 19l5-5" />
+      <path d="M15 13l2-2a1.5 1.5 0 0 1 2 2l-2 2" />
     </svg>
   );
 }

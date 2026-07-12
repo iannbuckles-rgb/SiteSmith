@@ -84,6 +84,16 @@ describe('previewServer.augmentHtml', () => {
     expect(out).toContain('"a/b.html"');
   });
 
+  it('includes the direct text editing bridge', () => {
+    const out = augmentHtml('<head></head>', 'index.html');
+    expect(out).toContain('mockswap:set-edit-mode');
+    expect(out).toContain('mockswap:text-edit');
+    expect(out).toContain('mockswap:select-element');
+    expect(out).toContain('contentEditable');
+    expect(out).toContain('data-mockswap-editing');
+    expect(out).toContain('data-mockswap-selected');
+  });
+
   it('is idempotent — never double-injects', () => {
     const once = augmentHtml('<head></head>', 'index.html');
     expect(augmentHtml(once, 'index.html')).toBe(once);

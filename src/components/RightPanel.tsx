@@ -23,6 +23,7 @@ import type {
   ImageDetection,
   ImageFitConfig,
 } from '../types';
+import type { EditorSelection, PreviewMode } from '../lib/previewControls';
 
 /** What the right panel is currently configured to do with the selected
  *  detection. The user toggles among these with chips in the section. */
@@ -67,6 +68,14 @@ interface RightPanelProps {
    *  re-encoded pill in the History row for traceability. */
   webpReencodeEnabled: boolean;
   onToggleWebpReencode: (next: boolean) => void;
+  mode: PreviewMode;
+  editorSelection: EditorSelection | null;
+  editorBusy: boolean;
+  editorError: string | null;
+  onApplyEditorText: (value: string) => void;
+  onApplyEditorImageUrl: (value: string) => void;
+  onApplyEditorImageFile: (file: File) => void;
+  onClearEditorSelection: () => void;
   exportState: ExportState;
   exportSummary: ExportSummary | null;
   exportError: string | null;
@@ -88,6 +97,8 @@ export function RightPanel({
   fitStyleBusy, fitStyleError,
   onApplyFitStyle, onResetFitStyle,
   webpReencodeEnabled, onToggleWebpReencode,
+  mode, editorSelection, editorBusy, editorError,
+  onApplyEditorText, onApplyEditorImageUrl, onApplyEditorImageFile, onClearEditorSelection,
   exportState, exportSummary, exportError, canExport, onExport, onExportAgain,
 }: RightPanelProps) {
   const broken = selectedDetection ? isBroken(selectedDetection) : false;
@@ -97,80 +108,89 @@ export function RightPanel({
       className="flex h-full min-h-0 flex-col gap-3 border-l border-zinc-800 bg-zinc-950 p-3"
       data-testid="right-panel"
     >
-      <section className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3" data-testid="asset-details">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-          Asset Details
-        </h3>
-        {selectedDetection ? (
-          <AssetDetailsBody detection={selectedDetection} thumbnail={thumbnail} />
-        ) : (
-          <p className="mt-2 text-xs text-zinc-500">
-            Select an image reference from the left panel to inspect details.
-          </p>
-        )}
-      </section>
+      {mode === 'editor' ? (
+        <EditorInspector
+          selection={editorSelection}
+          busy={editorBusy}
+          error={editorError}
+          onApplyText={onApplyEditorText}
+          onApplyImageUrl={onApplyEditorImageUrl}
+          onApplyImageFile={onApplyEditorImageFile}
+          onClear={onClearEditorSelection}
+        />
+      ) : (
+        <>
+          <section className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3" data-testid="asset-details">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+              Asset Details
+            </h3>
+            {selectedDetection ? (
+              <AssetDetailsBody detection={selectedDetection} thumbnail={thumbnail} />
+            ) : (
+              <p className="mt-2 text-xs text-zinc-500">
+                Select an image reference from the left panel to inspect details.
+              </p>
+            )}
+          </section>
 
-      <section
-        className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3"
-        data-testid="replacement-section"
-      >
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-          {broken ? 'Broken Image' : 'Replacement'}
-        </h3>
-        {!selectedDetection ? (
-          <p className="mt-2 text-xs text-zinc-500">
-            Pick a detection on the left to enable replacement.
-          </p>
-        ) : appliedPatch && !pendingFile ? (
-          <AppliedSummary
-            patch={appliedPatch}
-            onReplaceAgain={onReplaceAgain}
-          />
-        ) : (
-          <ActionArea
-            detection={selectedDetection}
-            pendingFile={pendingFile}
-            replacementBusy={busy}
-            brokenBusy={brokenBusy}
-            onPickFile={onPickReplacementFile}
-            onCancel={onCancelReplacement}
-            onCancelBrokenAction={onCancelBrokenAction}
-            onApplyReplacement={onApplyReplacement}
-            onApplyBrokenAction={onApplyBrokenAction}
-            webpReencodeEnabled={webpReencodeEnabled}
-            onToggleWebpReencode={onToggleWebpReencode}
-          />
-        )}
-      </section>
+          <section
+            className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3"
+            data-testid="replacement-section"
+          >
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+              {broken ? 'Broken Image' : 'Replacement'}
+            </h3>
+            {!selectedDetection ? (
+              <p className="mt-2 text-xs text-zinc-500">
+                Pick a detection on the left to enable replacement.
+              </p>
+            ) : appliedPatch && !pendingFile ? (
+              <AppliedSummary
+                patch={appliedPatch}
+                onReplaceAgain={onReplaceAgain}
+              />
+            ) : (
+              <ActionArea
+                detection={selectedDetection}
+                pendingFile={pendingFile}
+                replacementBusy={busy}
+                brokenBusy={brokenBusy}
+                onPickFile={onPickReplacementFile}
+                onCancel={onCancelReplacement}
+                onCancelBrokenAction={onCancelBrokenAction}
+                onApplyReplacement={onApplyReplacement}
+                onApplyBrokenAction={onApplyBrokenAction}
+                webpReencodeEnabled={webpReencodeEnabled}
+                onToggleWebpReencode={onToggleWebpReencode}
+              />
+            )}
+          </section>
 
-      {(error || brokenError) && (
-        <div
-          // aria-live="polite" announces when the user pauses; explicit
-          // (rather than via role="alert") so we don't fire interruptions
-          // during filling-out. brokenError takes precedence because it's
-          // the more actionable signal — a stuck Remove/Placeholder that
-          // we should not let silently shadow a Replace error.
-          aria-live="polite"
-          className="rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-2 text-xs text-rose-200"
-        >
-          {brokenError || error}
-        </div>
-      )}
+          {(error || brokenError) && (
+            <div
+              aria-live="polite"
+              className="rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-2 text-xs text-rose-200"
+            >
+              {brokenError || error}
+            </div>
+          )}
 
-      {selectedDetection && (
-        <section
-          className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3"
-          data-testid="fit-style-section"
-        >
-          <FitStylePanel
-            detection={selectedDetection}
-            appliedPatch={appliedPatch}
-            busy={fitStyleBusy}
-            error={fitStyleError}
-            onApply={onApplyFitStyle}
-            onReset={onResetFitStyle}
-          />
-        </section>
+          {selectedDetection && (
+            <section
+              className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3"
+              data-testid="fit-style-section"
+            >
+              <FitStylePanel
+                detection={selectedDetection}
+                appliedPatch={appliedPatch}
+                busy={fitStyleBusy}
+                error={fitStyleError}
+                onApply={onApplyFitStyle}
+                onReset={onResetFitStyle}
+              />
+            </section>
+          )}
+        </>
       )}
 
       <ExportSection
@@ -182,6 +202,164 @@ export function RightPanel({
         onExportAgain={onExportAgain}
       />
     </aside>
+  );
+}
+
+interface EditorInspectorProps {
+  selection: EditorSelection | null;
+  busy: boolean;
+  error: string | null;
+  onApplyText: (value: string) => void;
+  onApplyImageUrl: (value: string) => void;
+  onApplyImageFile: (file: File) => void;
+  onClear: () => void;
+}
+
+function EditorInspector({
+  selection,
+  busy,
+  error,
+  onApplyText,
+  onApplyImageUrl,
+  onApplyImageFile,
+  onClear,
+}: EditorInspectorProps) {
+  const [textDraft, setTextDraft] = useState('');
+  const [srcDraft, setSrcDraft] = useState('');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setTextDraft(selection?.text ?? '');
+    setSrcDraft(selection?.src ?? '');
+  }, [selection]);
+
+  const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (file) onApplyImageFile(file);
+  }, [onApplyImageFile]);
+
+  return (
+    <section
+      className="rounded-lg border border-violet-700/40 bg-zinc-900/70 p-3"
+      data-testid="editor-inspector"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-violet-200">
+            Editor
+          </h3>
+          <p className="mt-1 text-xs text-zinc-400">
+            {selection ? 'Selected element' : 'Click text, buttons, links, or images in the page.'}
+          </p>
+        </div>
+        {selection && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="shrink-0 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100"
+            data-testid="editor-clear-selection"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {!selection ? (
+        <div className="mt-3 rounded-md border border-dashed border-zinc-700 bg-zinc-950/50 p-3 text-xs leading-relaxed text-zinc-500">
+          Preview mode keeps the website clickable. Editor mode turns clicks into selections so edits can be applied to the project zip.
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3">
+          <dl className="space-y-1 text-xs">
+            <Field label="Type" value={selection.kind === 'image' ? 'image' : selection.tagName} />
+            <Field label="Element" value={selection.selectorHint ?? selection.tagName} mono />
+            <Field label="File" value={selection.sourceFile} title={selection.sourceFile} mono />
+          </dl>
+
+          {selection.kind === 'text' ? (
+            <div className="space-y-2" data-testid="editor-text-controls">
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                Text
+                <textarea
+                  value={textDraft}
+                  onChange={(event) => setTextDraft(event.target.value)}
+                  rows={4}
+                  className="mt-1 min-h-24 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs leading-relaxed text-zinc-100 outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30"
+                  data-testid="editor-text-input"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => onApplyText(textDraft)}
+                disabled={busy || textDraft.trim() === (selection.text ?? '').trim() || textDraft.trim().length === 0}
+                aria-busy={busy}
+                className="w-full rounded-md bg-violet-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="editor-apply-text"
+              >
+                {busy ? 'Applying…' : selection.tagName === 'button' ? 'Update button' : 'Update text'}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3" data-testid="editor-image-controls">
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                Image source
+                <input
+                  value={srcDraft}
+                  onChange={(event) => setSrcDraft(event.target.value)}
+                  className="mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-100 outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30"
+                  data-testid="editor-image-src-input"
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onApplyImageUrl(srcDraft)}
+                  disabled={busy || srcDraft.trim() === (selection.src ?? '').trim() || srcDraft.trim().length === 0}
+                  aria-busy={busy}
+                  className="rounded-md bg-violet-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="editor-apply-image-url"
+                >
+                  {busy ? 'Applying…' : 'Update source'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={busy}
+                  className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid="editor-pick-image"
+                >
+                  Replace file
+                </button>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_IMAGE_MIMES.join(',')}
+                onChange={handleFileChange}
+                className="hidden"
+                data-testid="editor-image-file-input"
+              />
+              {selection.alt && (
+                <p className="rounded-md border border-zinc-800 bg-zinc-950/50 px-2 py-1.5 text-[11px] text-zinc-400">
+                  Alt: <span className="text-zinc-200">{selection.alt}</span>
+                </p>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <div
+              aria-live="polite"
+              className="rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-2 text-xs text-rose-200"
+              data-testid="editor-error"
+            >
+              {error}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

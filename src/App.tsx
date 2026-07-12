@@ -12,7 +12,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { LeftPanel } from './components/LeftPanel';
 import type { LogoHelperSuccessSummary } from './components/LogoHelperPanel';
 import { RightPanel } from './components/RightPanel';
-import type { PreviewHistoryState, PreviewViewport } from './lib/previewControls';
+import type { EditorSelection, PreviewHistoryState, PreviewMode, PreviewViewport } from './lib/previewControls';
 import { applyPlaceholder, applyRemove, applyReplacement } from './lib/assetReplacer';
 import { bulkReplace } from './lib/bulkReplace';
 import { createAbortError, isAbortError, throwIfAborted } from './lib/cancellation';
@@ -66,6 +66,8 @@ const THUMBNAIL_CAP = 60;
 
 /** postMessage type for nav events emitted by the iframe script. */
 const NAV_MESSAGE_TYPE = 'mockswap:navigate';
+const TEXT_EDIT_MESSAGE_TYPE = 'mockswap:text-edit';
+const SELECT_MESSAGE_TYPE = 'mockswap:select-element';
 
 /** Save-to-IndexedDB debounce window. Big zips take ~60–80 ms to blob; we
  *  batch rapid mutations (chip clicks, typed searches) so 1 s is safe. */
@@ -155,6 +157,10 @@ export default function App() {
   const [previewZoom, setPreviewZoom] = useState<number>(1);
   const [previewHistory, setPreviewHistory] = useState<PreviewHistoryState>({ pages: [], index: -1 });
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>('preview');
+  const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
+  const [editorBusy, setEditorBusy] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
 
   // Editing / replacement state.
   const [patchesByKey, setPatchesByKey] = useState<Map<string, AppliedPatch>>(new Map());
@@ -1094,6 +1100,8 @@ export default function App() {
   const navigateToPage = useCallback((path: string) => {
     if (!path || path === currentPagePathRef.current) return;
     currentPagePathRef.current = path;
+    setEditorSelection(null);
+    setEditorError(null);
     setCurrentPagePath(path);
     setPreviewHistory((prev) => {
       const curIdx = prev.index;
@@ -1173,6 +1181,14 @@ export default function App() {
 
   const handleExitFullscreen = useCallback(() => {
     setPreviewFullscreen(false);
+  }, []);
+
+  const handleChangePreviewMode = useCallback((mode: PreviewMode) => {
+    setPreviewMode(mode);
+    setEditorError(null);
+    if (mode === 'preview') {
+      setEditorSelection(null);
+    }
   }, []);
 
   /**
@@ -1711,6 +1727,201 @@ export default function App() {
     }
   }, [project, patchesByKey]);
 
+  const handleApplyPreviewTextEdit = useCallback(async (input: {
+    sourceFile: string;
+    oldText: string;
+    newText: string;
+  }) => {
+    if (!project) return;
+    const oldText = input.oldText.trim();
+    const newText = input.newText.trim();
+    if (!oldText || !newText || oldText === newText) return;
+    if (!project.entries.some((entry) => !entry.isDirectory && entry.path === input.sourceFile)) return;
+    setManualReplaceError(null);
+    try {
+      const { patch } = await applyManualReplace(project, {
+        scope: input.sourceFile,
+        searchText: oldText,
+        replacementText: newText,
+        replaceAll: false,
+        imageFile: null,
+        customAssetFilename: '',
+      });
+      setPatchesByKey((map) => {
+        const next = new Map(map);
+        next.set(patch.id, patch);
+        return next;
+      });
+      setPreviewRevision((r) => r + 1);
+      setPreviewKey((k) => k + 1);
+      setExportState('idle');
+      setExportSummary(null);
+      setExportError(null);
+      pushToast({
+        kind: 'success',
+        title: 'Preview text updated',
+        detail: `${input.sourceFile} changed and is ready to export.`,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setManualReplaceError(detail);
+      setPreviewKey((k) => k + 1);
+      pushToast({
+        kind: 'warning',
+        title: "Couldn't save preview text edit",
+        detail,
+      });
+    }
+  }, [project, pushToast]);
+
+  const handleClearEditorSelection = useCallback(() => {
+    setEditorSelection(null);
+    setEditorError(null);
+  }, []);
+
+  const handleApplyEditorText = useCallback(async (newText: string) => {
+    if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'text') return;
+    const oldText = (editorSelection.text ?? '').trim();
+    const replacementText = newText.trim();
+    if (!oldText || !replacementText || oldText === replacementText) return;
+    setEditorBusy(true);
+    setEditorError(null);
+    try {
+      const { patch } = await applyManualReplace(project, {
+        scope: editorSelection.sourceFile,
+        searchText: oldText,
+        replacementText,
+        replaceAll: false,
+        imageFile: null,
+        customAssetFilename: '',
+      });
+      setPatchesByKey((map) => {
+        const next = new Map(map);
+        next.set(patch.id, patch);
+        return next;
+      });
+      setEditorSelection((current) => current && current.kind === 'text'
+        ? { ...current, text: replacementText, label: replacementText }
+        : current);
+      setPreviewRevision((r) => r + 1);
+      setPreviewKey((k) => k + 1);
+      setExportState('idle');
+      setExportSummary(null);
+      setExportError(null);
+      pushToast({
+        kind: 'success',
+        title: 'Editor text updated',
+        detail: `${editorSelection.sourceFile} changed and is ready to export.`,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setEditorError(detail);
+      pushToast({
+        kind: 'warning',
+        title: "Couldn't apply editor text change",
+        detail,
+      });
+    } finally {
+      setEditorBusy(false);
+    }
+  }, [project, editorBusy, editorSelection, pushToast]);
+
+  const handleApplyEditorImageUrl = useCallback(async (newSrc: string) => {
+    if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'image') return;
+    const oldSrc = (editorSelection.src ?? '').trim();
+    const replacementText = newSrc.trim();
+    if (!oldSrc || !replacementText || oldSrc === replacementText) return;
+    setEditorBusy(true);
+    setEditorError(null);
+    try {
+      const { patch } = await applyManualReplace(project, {
+        scope: editorSelection.sourceFile,
+        searchText: oldSrc,
+        replacementText,
+        replaceAll: false,
+        imageFile: null,
+        customAssetFilename: '',
+      });
+      setPatchesByKey((map) => {
+        const next = new Map(map);
+        next.set(patch.id, patch);
+        return next;
+      });
+      setEditorSelection((current) => current && current.kind === 'image'
+        ? { ...current, src: replacementText, label: current.alt || replacementText.split(/[/?#]/).filter(Boolean).pop() || 'Image' }
+        : current);
+      setPreviewRevision((r) => r + 1);
+      setPreviewKey((k) => k + 1);
+      setExportState('idle');
+      setExportSummary(null);
+      setExportError(null);
+    } catch (err) {
+      setEditorError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEditorBusy(false);
+    }
+  }, [project, editorBusy, editorSelection]);
+
+  const handleApplyEditorImageFile = useCallback(async (file: File) => {
+    if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'image') return;
+    if (!file.type.startsWith('image/')) {
+      setEditorError(`"${file.name}" isn't an image. Choose a PNG, JPG, WebP, GIF, SVG, AVIF, BMP, or icon file.`);
+      return;
+    }
+    const rawUrl = (editorSelection.src ?? '').trim();
+    if (!rawUrl) {
+      setEditorError('Selected image does not expose a source URL that can be replaced.');
+      return;
+    }
+    setEditorBusy(true);
+    setEditorError(null);
+    try {
+      const resolved = resolveAgainst(editorSelection.sourceFile, rawUrl);
+      const detection: ImageDetection = {
+        rawUrl,
+        resolvedPath: resolved.resolvedPath ?? '',
+        type: 'unknown',
+        status: resolved.isRemote ? 'remote' : (resolved.resolvedPath ? 'ok' : 'missing'),
+        sourceKind: 'html',
+        sourceFile: editorSelection.sourceFile,
+        sourceTag: 'img',
+        sourceAttr: 'src',
+      };
+      const id = `${detection.sourceFile}::${detection.sourceTag}::${detection.sourceAttr}::${detection.rawUrl}`;
+      const prev = patchesByKey.get(id);
+      const prevSourceValue = prev?.action === 'replace' ? prev.currentSourceValue : undefined;
+      const patch = await applyReplacement(project, detection, file, prevSourceValue);
+      setPatchesByKey((map) => {
+        const next = new Map(map);
+        next.set(patch.id, patch);
+        return next;
+      });
+      setEditorSelection((current) => current && current.kind === 'image'
+        ? { ...current, src: patch.currentSourceValue, label: current.alt || file.name }
+        : current);
+      setPreviewRevision((r) => r + 1);
+      setPreviewKey((k) => k + 1);
+      setExportState('idle');
+      setExportSummary(null);
+      setExportError(null);
+      pushToast({
+        kind: 'success',
+        title: 'Editor image replaced',
+        detail: `${file.name} was copied into the project zip.`,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setEditorError(detail);
+      pushToast({
+        kind: 'warning',
+        title: "Couldn't replace selected image",
+        detail,
+      });
+    } finally {
+      setEditorBusy(false);
+    }
+  }, [project, editorBusy, editorSelection, patchesByKey, pushToast]);
+
   // ------------------------------------------------------------------------
   // Bulk replace handlers
   // ------------------------------------------------------------------------
@@ -1876,6 +2087,10 @@ export default function App() {
     // the previous archive.
     setPreviewHistory({ pages: [], index: -1 });
     setPreviewFullscreen(false);
+    setPreviewMode('preview');
+    setEditorSelection(null);
+    setEditorBusy(false);
+    setEditorError(null);
     setActiveMobilePane('left');
     setRightDrawerOpen(false);
     // Viewport / zoom are user preferences, kept across reloads so
@@ -2082,7 +2297,49 @@ export default function App() {
     function onMessage(event: MessageEvent) {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
-      if ((data as { type?: string }).type !== NAV_MESSAGE_TYPE) return;
+      const type = (data as { type?: string }).type;
+      if (type === SELECT_MESSAGE_TYPE) {
+        const payload = data as Partial<EditorSelection>;
+        if (
+          payload &&
+          (payload.kind === 'text' || payload.kind === 'image') &&
+          typeof payload.sourceFile === 'string' &&
+          typeof payload.tagName === 'string' &&
+          typeof payload.label === 'string'
+        ) {
+          setEditorSelection({
+            sourceFile: payload.sourceFile,
+            kind: payload.kind,
+            tagName: payload.tagName,
+            label: payload.label,
+            text: typeof payload.text === 'string' ? payload.text : undefined,
+            src: typeof payload.src === 'string' ? payload.src : undefined,
+            alt: typeof payload.alt === 'string' ? payload.alt : undefined,
+            href: typeof payload.href === 'string' ? payload.href : undefined,
+            selectorHint: typeof payload.selectorHint === 'string' ? payload.selectorHint : undefined,
+          });
+          setEditorError(null);
+          setActiveMobilePane('right');
+          setRightDrawerOpen(true);
+        }
+        return;
+      }
+      if (type === TEXT_EDIT_MESSAGE_TYPE) {
+        const payload = data as { sourceFile?: unknown; oldText?: unknown; newText?: unknown };
+        if (
+          typeof payload.sourceFile === 'string' &&
+          typeof payload.oldText === 'string' &&
+          typeof payload.newText === 'string'
+        ) {
+          void handleApplyPreviewTextEdit({
+            sourceFile: payload.sourceFile,
+            oldText: payload.oldText,
+            newText: payload.newText,
+          });
+        }
+        return;
+      }
+      if (type !== NAV_MESSAGE_TYPE) return;
       const href = (data as { href?: unknown }).href;
       const sourceFile = (data as { sourceFile?: unknown }).sourceFile;
       if (typeof href !== 'string' || typeof sourceFile !== 'string') return;
@@ -2101,7 +2358,7 @@ export default function App() {
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [navigateToPage]);
+  }, [navigateToPage, handleApplyPreviewTextEdit]);
 
   useEffect(() => {
     if (!rightDrawerOpen) return;
@@ -2266,6 +2523,8 @@ export default function App() {
               onToggleFullscreen={handleToggleFullscreen}
               onExitFullscreen={handleExitFullscreen}
               onOpenInNewTab={handleOpenInNewTab}
+              mode={previewMode}
+              onChangeMode={handleChangePreviewMode}
               editCount={patchesByKey.size}
             />
           </ErrorBoundary>
@@ -2314,6 +2573,14 @@ export default function App() {
               onResetFitStyle={handleResetFitStyle}
               webpReencodeEnabled={webpReencode}
               onToggleWebpReencode={handleToggleWebpReencode}
+              mode={previewMode}
+              editorSelection={editorSelection}
+              editorBusy={editorBusy}
+              editorError={editorError}
+              onApplyEditorText={(value) => void handleApplyEditorText(value)}
+              onApplyEditorImageUrl={(value) => void handleApplyEditorImageUrl(value)}
+              onApplyEditorImageFile={(file) => void handleApplyEditorImageFile(file)}
+              onClearEditorSelection={handleClearEditorSelection}
             />
           </div>
         </div>

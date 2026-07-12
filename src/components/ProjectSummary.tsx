@@ -22,7 +22,7 @@ const toneClasses: Record<Stat['tone'], string> = {
 
 export function ProjectSummaryCard({ summary, fileName }: ProjectSummaryProps) {
   const stats: Stat[] = [
-    { label: 'Total files', value: summary.totalFiles, tone: 'neutral' },
+    { label: 'Files', value: summary.totalFiles, tone: 'neutral' },
     { label: 'HTML', value: summary.htmlFiles, tone: 'orange' },
     { label: 'CSS',  value: summary.cssFiles,  tone: 'sky' },
     { label: 'JS',   value: summary.jsFiles,   tone: 'yellow' },
@@ -30,26 +30,28 @@ export function ProjectSummaryCard({ summary, fileName }: ProjectSummaryProps) {
   ];
 
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3" data-testid="project-summary">
-      <header className="mb-2 flex items-baseline justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
-          Project
-        </h3>
-        <span className="truncate text-[11px] text-zinc-500" title={fileName}>
+    <div className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2.5" data-testid="project-summary">
+      <header className="mb-2 min-w-0">
+        <div className="flex items-baseline justify-between gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+            Project
+          </h3>
+          <span className="shrink-0 text-[11px] text-zinc-500">
+            {formatBytes(summary.totalSize)}
+          </span>
+        </div>
+        <p className="mt-0.5 truncate text-xs font-medium text-zinc-200" title={fileName}>
           {fileName}
-        </span>
+        </p>
       </header>
-      <dl className="grid grid-cols-5 gap-1.5">
+      <dl className="grid grid-cols-5 gap-1">
         {stats.map((s) => (
-          <div key={s.label} className="rounded-md bg-zinc-950/60 px-2 py-2 ring-1 ring-zinc-800">
-            <dt className="text-[10px] uppercase tracking-wide text-zinc-500">{s.label}</dt>
-            <dd className={`mt-0.5 text-base font-semibold ${toneClasses[s.tone]}`}>{s.value}</dd>
+          <div key={s.label} className="min-w-0 rounded-md bg-zinc-950/60 px-1.5 py-1 ring-1 ring-zinc-800">
+            <dt className="truncate text-[9px] uppercase tracking-wide text-zinc-500">{s.label}</dt>
+            <dd className={`mt-0.5 truncate text-sm font-semibold ${toneClasses[s.tone]}`}>{s.value}</dd>
           </div>
         ))}
       </dl>
-      <p className="mt-2 truncate text-[11px] text-zinc-500">
-        Total uncompressed size: <span className="text-zinc-300">{formatBytes(summary.totalSize)}</span>
-      </p>
     </div>
   );
 }

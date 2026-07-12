@@ -22,27 +22,22 @@ export type ReplacementPatch = Extract<AppliedPatch, { action: 'replace' }>;
 /**
  * Whether the replacement pipeline can handle a given detection. Mirrors
  * the explicit scope of this step:
- *   - HTML `<img src>` only — no `<input type=image>`, no `srcset`, no
- *     favicons, no manifest icons.
+ *   - HTML `<img src>`.
+ *   - HTML `<link rel="...icon..." href>` for favicons / touch icons.
+ *   - No `<input type=image>`, no `srcset`, no manifest icons.
  *   - CSS `url(...)` only.
  */
 export function canReplace(detection: ImageDetection): boolean {
-  const a = detection.sourceAttr.toLowerCase();
-  if (detection.sourceKind === 'html' && detection.sourceTag.toLowerCase() === 'img' && a === 'src') {
-    return true;
-  }
-  if (detection.sourceKind === 'css' && a === 'url' && detection.sourceTag.toLowerCase() === 'url') {
-    return true;
-  }
-  return false;
+  return isHtmlImgSrc(detection) || isHtmlIconLinkHref(detection) || isCssUrl(detection);
 }
 
 /**
  * Whether a broken reference can be cleanly *removed* from its host file.
- * Same scope as `canReplace` for v1: HTML `<img>` and CSS `url(...)`.
+ * Destructive actions intentionally stay narrower than replacement: HTML
+ * `<img>` and CSS `url(...)`, not favicons / touch icons.
  */
 export function canRemove(detection: ImageDetection): boolean {
-  return canReplace(detection);
+  return isHtmlImgSrc(detection) || isCssUrl(detection);
 }
 
 /**
@@ -53,11 +48,31 @@ export function canRemove(detection: ImageDetection): boolean {
  * placeholder doesn't apply.
  */
 export function canPlaceholder(detection: ImageDetection): boolean {
-  const a = detection.sourceAttr.toLowerCase();
+  return isHtmlImgSrc(detection);
+}
+
+function isHtmlImgSrc(detection: ImageDetection): boolean {
   return (
     detection.sourceKind === 'html'
     && detection.sourceTag.toLowerCase() === 'img'
-    && a === 'src'
+    && detection.sourceAttr.toLowerCase() === 'src'
+  );
+}
+
+function isHtmlIconLinkHref(detection: ImageDetection): boolean {
+  return (
+    detection.sourceKind === 'html'
+    && detection.sourceTag.toLowerCase() === 'link'
+    && detection.sourceAttr.toLowerCase() === 'href'
+    && /icon/.test(detection.extra?.rel?.toLowerCase() ?? '')
+  );
+}
+
+function isCssUrl(detection: ImageDetection): boolean {
+  return (
+    detection.sourceKind === 'css'
+    && detection.sourceTag.toLowerCase() === 'url'
+    && detection.sourceAttr.toLowerCase() === 'url'
   );
 }
 
@@ -359,10 +374,24 @@ function patchHtml(
   };
   const comments = findHtmlCommentRanges(html);
   return replaceHtmlTags(html, comments, ({ full, tagName, attrs }) => {
-    if (tagName.toLowerCase() !== detection.sourceTag.toLowerCase()) return full;
+    if (!htmlTagMatchesDetection(tagName, attrs, detection)) return full;
     const newAttrs = attrs.replace(ATTR_RE, replaceAttr);
     return newAttrs === attrs ? full : `<${tagName}${newAttrs}>`;
   });
+}
+
+function htmlTagMatchesDetection(
+  tagName: string,
+  attrs: string,
+  detection: ImageDetection,
+): boolean {
+  const expectedTag = detection.sourceTag.toLowerCase();
+  if (tagName.toLowerCase() !== expectedTag) return false;
+  if (expectedTag !== 'link' || detection.sourceAttr.toLowerCase() !== 'href') return true;
+
+  const rel = extractAttr(attrs, 'rel')?.toLowerCase() ?? '';
+  const expectedRel = detection.extra?.rel?.toLowerCase() ?? '';
+  return expectedRel ? rel === expectedRel : /icon/.test(rel);
 }
 
 function patchCss(css: string, searchValue: string, newRef: string): string {
