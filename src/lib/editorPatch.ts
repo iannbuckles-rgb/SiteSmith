@@ -56,6 +56,9 @@ const ATTR_BY_FIELD: Partial<Record<EditorEditField, string>> = {
   src: 'src',
   alt: 'alt',
   href: 'href',
+  target: 'target',
+  rel: 'rel',
+  title: 'title',
   id: 'id',
   class: 'class',
   style: 'style',
@@ -77,6 +80,9 @@ const REMOVE_WHEN_EMPTY_FIELDS = new Set<EditorEditField>([
   'name',
   'type',
   'placeholder',
+  'target',
+  'rel',
+  'title',
 ]);
 
 export async function applyEditorEdit(
@@ -349,6 +355,9 @@ function normalizeEdits(
     src: selection.src ?? '',
     alt: selection.alt ?? '',
     href: selection.href ?? '',
+    target: selection.target ?? '',
+    rel: selection.rel ?? '',
+    title: selection.title ?? '',
     id: selection.elementId ?? '',
     class: selection.className ?? '',
     style: selection.style ?? '',
@@ -600,6 +609,16 @@ function writeStyleProperty(style: string, property: string, value: string): str
   }
   if (!replaced && nextValue) out.push(`${property}: ${nextValue}`);
   return out.join('; ');
+}
+
+/** Read one declaration from an inline style without discarding unrelated CSS. */
+export function readEditorStyleProperty(style: string, property: string): string {
+  return readStyleProperty(style, property) ?? '';
+}
+
+/** Add, replace, or remove one inline declaration while preserving the rest. */
+export function writeEditorStyleProperty(style: string, property: string, value: string): string {
+  return writeStyleProperty(style, property, value);
 }
 
 function splitStyleDeclarations(style: string): string[] {

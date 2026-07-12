@@ -1876,70 +1876,44 @@ export default function App() {
     setEditorError(null);
   }, []);
 
-  const handleApplyEditorText = useCallback(async (newText: string) => {
-    if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'text') return;
-    const oldText = (editorSelection.text ?? '').trim();
-    const replacementText = newText.trim();
-    if (!oldText || !replacementText || oldText === replacementText) return;
-    setEditorBusy(true);
-    setEditorError(null);
-    try {
-      const patch = await applyEditorEdit(project, {
-        selection: editorSelection,
-        edits: [{ field: 'text', oldValue: oldText, newValue: replacementText }],
-      });
-      updatePatchesByKey((map) => {
-        const next = new Map(map);
-        next.set(patch.id, patch);
-        return next;
-      });
-      setEditorSelection((current) => current && current.kind === 'text'
-        ? { ...current, text: replacementText, label: replacementText }
-        : current);
-      setPreviewRevision((r) => r + 1);
-      setPreviewKey((k) => k + 1);
-      setExportState('idle');
-      setExportSummary(null);
-      setExportError(null);
-      pushToast({
-        kind: 'success',
-        title: 'Editor text updated',
-        detail: `${editorSelection.sourceFile} changed and is ready to export.`,
-      });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      setEditorError(detail);
-      pushToast({
-        kind: 'warning',
-        title: "Couldn't apply editor text change",
-        detail,
-      });
-    } finally {
-      setEditorBusy(false);
-    }
-  }, [project, editorBusy, editorSelection, pushToast, updatePatchesByKey]);
-
-  const handleApplyEditorField = useCallback(async (field: Exclude<EditorEditField, 'text'>, value: string) => {
+  const handleApplyEditorEdits = useCallback(async (
+    requestedEdits: Array<{ field: EditorEditField; newValue: string }>,
+  ) => {
     if (!project || editorBusy || !editorSelection) return;
-    if (field === 'src' && editorSelection.kind !== 'image') return;
-    if (field === 'alt' && editorSelection.kind !== 'image') return;
-    if ((field === 'src' || field === 'href') && value.trim().length === 0) return;
-    const nextValue = value.trim();
-    const currentValue = editorFieldValue(editorSelection, field).trim();
-    if (nextValue === currentValue) return;
+    const edits = requestedEdits.flatMap((edit) => {
+      if (edit.field === 'text' && editorSelection.kind !== 'text') return [];
+      if ((edit.field === 'src' || edit.field === 'alt') && editorSelection.kind !== 'image') return [];
+      const nextValue = edit.newValue.trim();
+      if ((edit.field === 'src' || edit.field === 'href') && nextValue.length === 0) return [];
+      const currentValue = edit.field === 'text'
+        ? (editorSelection.text ?? '').trim()
+        : editorFieldValue(editorSelection, edit.field).trim();
+      return nextValue === currentValue
+        ? []
+        : [{ field: edit.field, oldValue: currentValue, newValue: nextValue }];
+    });
+    if (edits.length === 0) return;
     setEditorBusy(true);
     setEditorError(null);
     try {
       const patch = await applyEditorEdit(project, {
         selection: editorSelection,
-        edits: [{ field, oldValue: currentValue, newValue: nextValue }],
+        edits,
       });
       updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
       });
-      setEditorSelection((current) => updateEditorSelectionField(current, field, nextValue));
+      setEditorSelection((current) => edits.reduce<EditorSelection | null>((next, edit) => {
+        if (!next) return next;
+        if (edit.field === 'text') {
+          return next.kind === 'text'
+            ? { ...next, text: edit.newValue, label: edit.newValue }
+            : next;
+        }
+        return updateEditorSelectionField(next, edit.field, edit.newValue);
+      }, current));
       setPreviewRevision((r) => r + 1);
       setPreviewKey((k) => k + 1);
       setExportState('idle');
@@ -1947,15 +1921,15 @@ export default function App() {
       setExportError(null);
       pushToast({
         kind: 'success',
-        title: `Editor ${editorFieldLabel(field)} updated`,
-        detail: `${editorSelection.sourceFile} changed and is ready to export.`,
+        title: edits.length === 1 ? `Editor ${editorFieldLabel(edits[0].field)} updated` : 'Editor changes saved',
+        detail: `${edits.length} source change${edits.length === 1 ? '' : 's'} applied to ${editorSelection.sourceFile}.`,
       });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       setEditorError(detail);
       pushToast({
         kind: 'warning',
-        title: `Couldn't update editor ${editorFieldLabel(field)}`,
+        title: "Couldn't save editor changes",
         detail,
       });
     } finally {
@@ -2883,8 +2857,7 @@ export default function App() {
               editorSelection={editorSelection}
               editorBusy={editorBusy}
               editorError={editorError}
-              onApplyEditorText={(value) => void handleApplyEditorText(value)}
-              onApplyEditorField={(field, value) => void handleApplyEditorField(field, value)}
+              onApplyEditorEdits={(edits) => void handleApplyEditorEdits(edits)}
               onApplyEditorImageFile={(file) => void handleApplyEditorImageFile(file)}
               onMoveEditorSelection={handleMoveEditorSelection}
               onDeleteEditorSelection={() => void handleDeleteEditorSelection()}
@@ -3334,6 +3307,9 @@ function readEditorSelection(value: unknown, sourceFileHint: unknown): EditorSel
     src: typeof value.src === 'string' ? value.src : undefined,
     alt: typeof value.alt === 'string' ? value.alt : undefined,
     href: typeof value.href === 'string' ? value.href : undefined,
+    target: typeof value.target === 'string' ? value.target : undefined,
+    rel: typeof value.rel === 'string' ? value.rel : undefined,
+    title: typeof value.title === 'string' ? value.title : undefined,
     elementId: typeof value.elementId === 'string' ? value.elementId : undefined,
     className: typeof value.className === 'string' ? value.className : undefined,
     style: typeof value.style === 'string' ? value.style : undefined,
@@ -3372,6 +3348,12 @@ function editorFieldValue(selection: EditorSelection, field: EditableEditorField
       return selection.alt ?? '';
     case 'href':
       return selection.href ?? '';
+    case 'target':
+      return selection.target ?? '';
+    case 'rel':
+      return selection.rel ?? '';
+    case 'title':
+      return selection.title ?? '';
     case 'id':
       return selection.elementId ?? '';
     case 'class':
@@ -3410,6 +3392,12 @@ function updateEditorSelectionField(
         : selection;
     case 'href':
       return { ...selection, href: value };
+    case 'target':
+      return { ...selection, target: value };
+    case 'rel':
+      return { ...selection, rel: value };
+    case 'title':
+      return { ...selection, title: value };
     case 'id':
       return { ...selection, elementId: value, selectorHint: buildSelectorHint(selection.tagName, value, selection.className ?? '') };
     case 'class':
@@ -3431,14 +3419,22 @@ function updateEditorSelectionField(
   }
 }
 
-function editorFieldLabel(field: EditableEditorField): string {
+function editorFieldLabel(field: EditorEditField): string {
   switch (field) {
+    case 'text':
+      return 'text';
     case 'src':
       return 'image source';
     case 'alt':
       return 'alt text';
     case 'href':
       return 'link';
+    case 'target':
+      return 'link target';
+    case 'rel':
+      return 'link relationship';
+    case 'title':
+      return 'title';
     case 'id':
       return 'element id';
     case 'class':

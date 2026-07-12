@@ -55,6 +55,9 @@ export interface EditorSelection {
   src?: string;
   alt?: string;
   href?: string;
+  target?: string;
+  rel?: string;
+  title?: string;
   selectorHint?: string;
   moveBeforeTarget?: EditorReorderTarget;
   moveAfterTarget?: EditorReorderTarget;

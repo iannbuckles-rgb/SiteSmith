@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 
-import { applyEditorDelete, applyEditorEdit, applyEditorNudge, applyEditorReorder } from '../src/lib/editorPatch';
+import {
+  applyEditorDelete,
+  applyEditorEdit,
+  applyEditorNudge,
+  applyEditorReorder,
+  readEditorStyleProperty,
+  writeEditorStyleProperty,
+} from '../src/lib/editorPatch';
 import { buildExport, buildReport } from '../src/lib/exportService';
 import { undoPatchById } from '../src/lib/undoStack';
 import type { EditorSelection } from '../src/lib/previewControls';
@@ -216,6 +223,89 @@ describe('applyEditorEdit', () => {
     expect(report).toContain('Direct editor edits');
     expect(report).toContain('`href`: `/old`');
     expect(report).toContain('`/new`');
+  });
+
+  it('applies content, link metadata, accessibility, and layout as one atomic patch', async () => {
+    const source = '<a href="/old" class="cta" style="color: red">Read more</a>';
+    const project = makeProject({ 'index.html': source });
+
+    const patch = await applyEditorEdit(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'text',
+        tagName: 'a',
+        label: 'Read more',
+        text: 'Read more',
+        href: '/old',
+        className: 'cta',
+        style: 'color: red',
+        sourceStart: 0,
+        sourceEnd: source.indexOf('>') + 1,
+        selectorHint: 'a.cta',
+      },
+      edits: [
+        { field: 'text', newValue: 'Start now' },
+        { field: 'href', newValue: '/signup' },
+        { field: 'target', newValue: '_blank' },
+        { field: 'rel', newValue: 'noopener noreferrer' },
+        { field: 'aria-label', newValue: 'Start a new account' },
+        { field: 'style', newValue: 'color: white; background-color: #2563eb; padding: 12px 20px' },
+      ],
+    });
+
+    expect(patch.edits).toHaveLength(6);
+    expect(await zipText(project, 'index.html')).toBe(
+      '<a href="/signup" class="cta" style="color: white; background-color: #2563eb; padding: 12px 20px" target="_blank" rel="noopener noreferrer" aria-label="Start a new account">Start now</a>',
+    );
+
+    undoPatchById(project, patch);
+    expect(await zipText(project, 'index.html')).toBe(source);
+  });
+
+  it('survives the same zip blob serialization used by project saves', async () => {
+    const source = '<main><h1 id="title">Original</h1></main>';
+    const project = makeProject({ 'index.html': source });
+    await applyEditorEdit(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'text',
+        tagName: 'h1',
+        label: 'Original',
+        text: 'Original',
+        elementId: 'title',
+        sourceStart: source.indexOf('<h1'),
+        sourceEnd: source.indexOf('>') + 1,
+        selectorHint: 'h1#title',
+      },
+      edits: [
+        { field: 'text', newValue: 'Persisted heading' },
+        { field: 'style', newValue: 'font-size: 48px; text-align: center' },
+      ],
+    });
+
+    const savedBlob = await project.zip.generateAsync({ type: 'blob' });
+    const restoredZip = await JSZip.loadAsync(savedBlob);
+    await expect(restoredZip.file('index.html')?.async('text')).resolves.toBe(
+      '<main><h1 id="title" style="font-size: 48px; text-align: center">Persisted heading</h1></main>',
+    );
+  });
+});
+
+describe('editor inline style controls', () => {
+  it('updates one declaration without damaging functions, variables, or quoted semicolons', () => {
+    const source = 'background-image: linear-gradient(90deg, red, blue); content: "a;b"; --gap: 12px; color: red';
+    const updated = writeEditorStyleProperty(source, 'color', '#ffffff');
+    const withPadding = writeEditorStyleProperty(updated, 'padding', 'var(--gap)');
+
+    expect(readEditorStyleProperty(withPadding, 'background-image')).toBe('linear-gradient(90deg, red, blue)');
+    expect(readEditorStyleProperty(withPadding, 'content')).toBe('"a;b"');
+    expect(readEditorStyleProperty(withPadding, '--gap')).toBe('12px');
+    expect(readEditorStyleProperty(withPadding, 'color')).toBe('#ffffff');
+    expect(readEditorStyleProperty(withPadding, 'padding')).toBe('var(--gap)');
+  });
+
+  it('removes a structured declaration when its control is cleared', () => {
+    expect(writeEditorStyleProperty('display: flex; gap: 16px; color: red', 'gap', '')).toBe('display: flex; color: red');
   });
 });
 

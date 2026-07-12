@@ -6,6 +6,7 @@ import {
   useState,
   type ChangeEvent,
   type DragEvent,
+  type ReactNode,
 } from 'react';
 
 import {
@@ -15,6 +16,7 @@ import {
   isBroken,
 } from '../lib/assetReplacer';
 import { formatBytes } from '../lib/fileTypes';
+import { readEditorStyleProperty, writeEditorStyleProperty } from '../lib/editorPatch';
 import { FitStylePanel } from './FitStylePanel';
 import type {
   AppliedPatch,
@@ -73,8 +75,7 @@ interface RightPanelProps {
   editorSelection: EditorSelection | null;
   editorBusy: boolean;
   editorError: string | null;
-  onApplyEditorText: (value: string) => void;
-  onApplyEditorField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
+  onApplyEditorEdits: (edits: Array<{ field: EditorEditField; newValue: string }>) => void;
   onApplyEditorImageFile: (file: File) => void;
   onMoveEditorSelection: (placement: 'before' | 'after', reference: EditorReorderTarget) => void;
   onDeleteEditorSelection: () => void;
@@ -101,30 +102,30 @@ export function RightPanel({
   onApplyFitStyle, onResetFitStyle,
   webpReencodeEnabled, onToggleWebpReencode,
   mode, editorSelection, editorBusy, editorError,
-  onApplyEditorText, onApplyEditorField, onApplyEditorImageFile, onMoveEditorSelection, onDeleteEditorSelection, onClearEditorSelection,
+  onApplyEditorEdits, onApplyEditorImageFile, onMoveEditorSelection, onDeleteEditorSelection, onClearEditorSelection,
   exportState, exportSummary, exportError, canExport, onExport, onExportAgain,
 }: RightPanelProps) {
   const broken = selectedDetection ? isBroken(selectedDetection) : false;
 
   return (
     <aside
-      className="flex h-full min-h-0 flex-col gap-3 border-l border-zinc-800 bg-zinc-950 p-3"
+      className="flex h-full min-h-0 flex-col overflow-hidden border-l border-zinc-800 bg-zinc-950"
       data-testid="right-panel"
     >
-      {mode === 'editor' ? (
-        <EditorInspector
-          selection={editorSelection}
-          busy={editorBusy}
-          error={editorError}
-          onApplyText={onApplyEditorText}
-          onApplyField={onApplyEditorField}
-          onApplyImageFile={onApplyEditorImageFile}
-          onMove={onMoveEditorSelection}
-          onDelete={onDeleteEditorSelection}
-          onClear={onClearEditorSelection}
-        />
-      ) : (
-        <>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3" data-testid="right-panel-scroll-region">
+        {mode === 'editor' ? (
+          <EditorInspector
+            selection={editorSelection}
+            busy={editorBusy}
+            error={editorError}
+            onApplyEdits={onApplyEditorEdits}
+            onApplyImageFile={onApplyEditorImageFile}
+            onMove={onMoveEditorSelection}
+            onDelete={onDeleteEditorSelection}
+            onClear={onClearEditorSelection}
+          />
+        ) : (
+          <div className="space-y-3">
           <section className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3" data-testid="asset-details">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
               Asset Details
@@ -195,17 +196,20 @@ export function RightPanel({
               />
             </section>
           )}
-        </>
-      )}
+          </div>
+        )}
+      </div>
 
-      <ExportSection
-        state={exportState}
-        summary={exportSummary}
-        error={exportError}
-        canExport={canExport}
-        onExport={onExport}
-        onExportAgain={onExportAgain}
-      />
+      <div className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
+        <ExportSection
+          state={exportState}
+          summary={exportSummary}
+          error={exportError}
+          canExport={canExport}
+          onExport={onExport}
+          onExportAgain={onExportAgain}
+        />
+      </div>
     </aside>
   );
 }
@@ -214,8 +218,7 @@ interface EditorInspectorProps {
   selection: EditorSelection | null;
   busy: boolean;
   error: string | null;
-  onApplyText: (value: string) => void;
-  onApplyField: (field: Exclude<EditorEditField, 'text'>, value: string) => void;
+  onApplyEdits: (edits: Array<{ field: EditorEditField; newValue: string }>) => void;
   onApplyImageFile: (file: File) => void;
   onMove: (placement: 'before' | 'after', reference: EditorReorderTarget) => void;
   onDelete: () => void;
@@ -226,42 +229,17 @@ function EditorInspector({
   selection,
   busy,
   error,
-  onApplyText,
-  onApplyField,
+  onApplyEdits,
   onApplyImageFile,
   onMove,
   onDelete,
   onClear,
 }: EditorInspectorProps) {
-  const [textDraft, setTextDraft] = useState('');
-  const [srcDraft, setSrcDraft] = useState('');
-  const [altDraft, setAltDraft] = useState('');
-  const [hrefDraft, setHrefDraft] = useState('');
-  const [idDraft, setIdDraft] = useState('');
-  const [classDraft, setClassDraft] = useState('');
-  const [styleDraft, setStyleDraft] = useState('');
-  const [roleDraft, setRoleDraft] = useState('');
-  const [ariaLabelDraft, setAriaLabelDraft] = useState('');
-  const [nameDraft, setNameDraft] = useState('');
-  const [typeDraft, setTypeDraft] = useState('');
-  const [valueDraft, setValueDraft] = useState('');
-  const [placeholderDraft, setPlaceholderDraft] = useState('');
+  const [drafts, setDrafts] = useState<EditorDrafts>(() => createEditorDrafts(null));
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    setTextDraft(selection?.text ?? '');
-    setSrcDraft(selection?.src ?? '');
-    setAltDraft(selection?.alt ?? '');
-    setHrefDraft(selection?.href ?? '');
-    setIdDraft(selection?.elementId ?? '');
-    setClassDraft(selection?.className ?? '');
-    setStyleDraft(selection?.style ?? '');
-    setRoleDraft(selection?.role ?? '');
-    setAriaLabelDraft(selection?.ariaLabel ?? '');
-    setNameDraft(selection?.name ?? '');
-    setTypeDraft(selection?.inputType ?? '');
-    setValueDraft(selection?.value ?? '');
-    setPlaceholderDraft(selection?.placeholder ?? '');
+    setDrafts(createEditorDrafts(selection));
   }, [selection]);
 
   const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -274,63 +252,94 @@ function EditorInspector({
   const canEditFormValue = !!selection && (selection.tagName === 'input' || selection.tagName === 'textarea');
   const canEditPlaceholder = !!selection && (selection.tagName === 'input' || selection.tagName === 'textarea');
   const canEditType = !!selection && selection.tagName === 'input';
+  const isLinkSelection = !!selection && (selection.tagName === 'a' || selection.href !== undefined);
+  const dirtyEdits = useMemo(() => selection
+    ? EDITOR_DRAFT_FIELDS.flatMap((field) => {
+      const value = drafts[field];
+      return value.trim() === editorSelectionValue(selection, field).trim()
+        ? []
+        : [{ field, newValue: value }];
+    })
+    : [], [drafts, selection]);
+  const invalidRequiredEdit = dirtyEdits.some((edit) =>
+    (edit.field === 'text' || edit.field === 'src' || edit.field === 'href')
+    && edit.newValue.trim().length === 0,
+  );
+  const updateDraft = useCallback((field: EditorEditField, value: string) => {
+    setDrafts((current) => ({ ...current, [field]: value }));
+  }, []);
+  const updateStyle = useCallback((property: string, value: string) => {
+    setDrafts((current) => ({
+      ...current,
+      style: writeEditorStyleProperty(current.style, property, value),
+    }));
+  }, []);
+  const updateLinkTarget = useCallback((value: string) => {
+    setDrafts((current) => ({
+      ...current,
+      target: value,
+      rel: value === '_blank' && current.rel.trim().length === 0
+        ? 'noopener noreferrer'
+        : current.rel,
+    }));
+  }, []);
+  const applyChanges = useCallback(() => {
+    if (dirtyEdits.length > 0 && !invalidRequiredEdit && !busy) onApplyEdits(dirtyEdits);
+  }, [busy, dirtyEdits, invalidRequiredEdit, onApplyEdits]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key !== 'Enter') return;
+      event.preventDefault();
+      applyChanges();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [applyChanges]);
 
   return (
     <section
-      className="rounded-lg border border-violet-700/40 bg-zinc-900/70 p-3"
+      className="min-w-0"
       data-testid="editor-inspector"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-3 border-b border-zinc-800 pb-3">
         <div className="min-w-0">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-violet-200">
-            Editor
-          </h3>
-          <p className="mt-1 text-xs text-zinc-400">
-            {selection ? 'Selected element' : 'Click text, buttons, fields, links, or images in the page.'}
+          <h3 className="text-sm font-semibold text-zinc-100">Inspector</h3>
+          <p className="mt-0.5 truncate text-xs text-zinc-500">
+            {selection ? selection.sourceFile : 'Select an element in the preview'}
           </p>
         </div>
         {selection && (
           <button
             type="button"
             onClick={onClear}
-            className="shrink-0 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100"
+            className="shrink-0 rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+            title="Clear selection"
+            aria-label="Clear selection"
             data-testid="editor-clear-selection"
           >
-            Clear
+            <CloseIcon />
           </button>
         )}
       </div>
 
       {!selection ? (
-        <div className="mt-3 rounded-md border border-dashed border-zinc-700 bg-zinc-950/50 p-3 text-xs leading-relaxed text-zinc-500">
-          Preview mode keeps the website clickable. Editor mode turns clicks into selections so edits can be applied to the project zip.
+        <div className="mt-4 border border-dashed border-zinc-700 p-4 text-center text-xs leading-relaxed text-zinc-500">
+          Click an element in the page to edit its content, layout, and attributes.
         </div>
       ) : (
-        <div className="mt-3 space-y-3">
-          <dl className="space-y-1 text-xs">
-            <Field label="Type" value={selection.kind === 'image' ? 'image' : selection.tagName} />
-            <Field label="Element" value={selection.selectorHint ?? selection.tagName} mono />
-            <Field label="File" value={selection.sourceFile} title={selection.sourceFile} mono />
-          </dl>
-
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={busy}
-            aria-busy={busy}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-rose-700/60 bg-rose-950/40 px-3 py-2 text-xs font-medium text-rose-200 transition-colors hover:border-rose-400 hover:bg-rose-500/15 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
-            data-testid="editor-delete-selection"
-          >
-            <TrashIcon />
-            Delete selected
-          </button>
+        <div className="space-y-4 pt-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-violet-200 ring-1 ring-inset ring-violet-500/30">
+              {selection.tagName}
+            </span>
+            <span className="min-w-0 truncate font-mono text-xs text-zinc-300" title={selection.selectorHint}>
+              {selection.selectorHint ?? selection.tagName}
+            </span>
+          </div>
 
           {(selection.moveBeforeTarget || selection.moveAfterTarget) && (
-            <div className="space-y-2 border-t border-zinc-800 pt-3" data-testid="editor-reorder-controls">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                Order
-              </div>
-              <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2" data-testid="editor-reorder-controls">
                 <button
                   type="button"
                   onClick={() => selection.moveBeforeTarget && onMove('before', selection.moveBeforeTarget)}
@@ -353,57 +362,26 @@ function EditorInspector({
                   <ArrowDownIcon />
                   Later
                 </button>
-              </div>
             </div>
           )}
 
           {selection.kind === 'text' ? (
-            <div className="space-y-3" data-testid="editor-text-controls">
-              <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+            <EditorSection title="Content" testId="editor-text-controls">
+              <label className="block text-xs font-medium text-zinc-300">
                 Text
                 <textarea
-                  value={textDraft}
-                  onChange={(event) => setTextDraft(event.target.value)}
+                  value={drafts.text}
+                  onChange={(event) => updateDraft('text', event.target.value)}
                   rows={4}
-                  className="mt-1 min-h-24 w-full resize-y rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs leading-relaxed text-zinc-100 outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30"
+                  className={EDITOR_TEXTAREA_CLASS}
                   data-testid="editor-text-input"
                 />
               </label>
-              <button
-                type="button"
-                onClick={() => onApplyText(textDraft)}
-                disabled={busy || textDraft.trim() === (selection.text ?? '').trim() || textDraft.trim().length === 0}
-                aria-busy={busy}
-                className="w-full rounded-md bg-violet-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-                data-testid="editor-apply-text"
-              >
-                {busy ? 'Applying…' : selection.tagName === 'button' ? 'Update button' : 'Update text'}
-              </button>
-              {(selection.tagName === 'a' || selection.href !== undefined) && (
-                <EditorInputControl
-                  label="Link URL"
-                  value={hrefDraft}
-                  currentValue={selection.href ?? ''}
-                  onChange={setHrefDraft}
-                  onApply={() => onApplyField('href', hrefDraft)}
-                  disabled={busy || hrefDraft.trim().length === 0}
-                  mono
-                  testId="editor-link-href"
-                />
-              )}
-            </div>
+            </EditorSection>
           ) : selection.kind === 'image' ? (
-            <div className="space-y-3" data-testid="editor-image-controls">
-              <EditorInputControl
-                label="Image source"
-                value={srcDraft}
-                currentValue={selection.src ?? ''}
-                onChange={setSrcDraft}
-                onApply={() => onApplyField('src', srcDraft)}
-                disabled={busy || srcDraft.trim().length === 0}
-                mono
-                testId="editor-image-src"
-              />
+            <EditorSection title="Image" testId="editor-image-controls">
+              <EditorField label="Source" value={drafts.src} onChange={(value) => updateDraft('src', value)} mono testId="editor-image-src" />
+              <EditorField label="Alt text" value={drafts.alt} onChange={(value) => updateDraft('alt', value)} testId="editor-image-alt" />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -421,118 +399,62 @@ function EditorInspector({
                 className="hidden"
                 data-testid="editor-image-file-input"
               />
-              <EditorInputControl
-                label="Alt text"
-                value={altDraft}
-                currentValue={selection.alt ?? ''}
-                onChange={setAltDraft}
-                onApply={() => onApplyField('alt', altDraft)}
-                disabled={busy}
-                testId="editor-image-alt"
-              />
-            </div>
+            </EditorSection>
           ) : isFormSelection ? (
-            <div className="space-y-3" data-testid="editor-form-controls">
+            <EditorSection title="Field" testId="editor-form-controls">
               {canEditFormValue && (
-                <EditorInputControl
-                  label="Value"
-                  value={valueDraft}
-                  currentValue={selection.value ?? ''}
-                  onChange={setValueDraft}
-                  onApply={() => onApplyField('value', valueDraft)}
-                  disabled={busy}
-                  mono
-                  testId="editor-form-value"
-                />
+                <EditorField label="Value" value={drafts.value} onChange={(value) => updateDraft('value', value)} testId="editor-form-value" />
               )}
               {canEditPlaceholder && (
-                <EditorInputControl
-                  label="Placeholder"
-                  value={placeholderDraft}
-                  currentValue={selection.placeholder ?? ''}
-                  onChange={setPlaceholderDraft}
-                  onApply={() => onApplyField('placeholder', placeholderDraft)}
-                  disabled={busy}
-                  testId="editor-form-placeholder"
-                />
+                <EditorField label="Placeholder" value={drafts.placeholder} onChange={(value) => updateDraft('placeholder', value)} testId="editor-form-placeholder" />
               )}
-              <EditorInputControl
-                label="Name"
-                value={nameDraft}
-                currentValue={selection.name ?? ''}
-                onChange={setNameDraft}
-                onApply={() => onApplyField('name', nameDraft)}
-                disabled={busy}
-                mono
-                testId="editor-form-name"
-              />
+              <EditorField label="Name" value={drafts.name} onChange={(value) => updateDraft('name', value)} mono testId="editor-form-name" />
               {canEditType && (
-                <EditorInputControl
-                  label="Input type"
-                  value={typeDraft}
-                  currentValue={selection.inputType ?? ''}
-                  onChange={setTypeDraft}
-                  onApply={() => onApplyField('type', typeDraft)}
-                  disabled={busy}
-                  mono
-                  testId="editor-form-type"
-                />
+                <EditorField label="Input type" value={drafts.type} onChange={(value) => updateDraft('type', value)} mono testId="editor-form-type" />
               )}
-            </div>
+            </EditorSection>
           ) : null}
 
-          <div className="space-y-3 border-t border-zinc-800 pt-3" data-testid="editor-advanced-controls">
-            <EditorInputControl
-              label="Element ID"
-              value={idDraft}
-              currentValue={selection.elementId ?? ''}
-              onChange={setIdDraft}
-              onApply={() => onApplyField('id', idDraft)}
-              disabled={busy}
-              mono
-              testId="editor-id"
-            />
-            <EditorInputControl
-              label="ARIA label"
-              value={ariaLabelDraft}
-              currentValue={selection.ariaLabel ?? ''}
-              onChange={setAriaLabelDraft}
-              onApply={() => onApplyField('aria-label', ariaLabelDraft)}
-              disabled={busy}
-              testId="editor-aria-label"
-            />
-            <EditorInputControl
-              label="Role"
-              value={roleDraft}
-              currentValue={selection.role ?? ''}
-              onChange={setRoleDraft}
-              onApply={() => onApplyField('role', roleDraft)}
-              disabled={busy}
-              mono
-              testId="editor-role"
-            />
-            <EditorInputControl
-              label="Classes"
-              value={classDraft}
-              currentValue={selection.className ?? ''}
-              onChange={setClassDraft}
-              onApply={() => onApplyField('class', classDraft)}
-              disabled={busy}
-              mono
-              testId="editor-class"
-            />
-            <EditorInputControl
-              label="Inline style"
-              value={styleDraft}
-              currentValue={selection.style ?? ''}
-              onChange={setStyleDraft}
-              onApply={() => onApplyField('style', styleDraft)}
-              disabled={busy}
-              mono
-              multiLine
-              testId="editor-style"
-            />
-          </div>
+          {isLinkSelection && (
+            <EditorSection title="Link" testId="editor-link-controls">
+              <EditorField label="URL" value={drafts.href} onChange={(value) => updateDraft('href', value)} mono testId="editor-link-href" />
+              <div className="grid grid-cols-2 gap-2">
+                <EditorSelect label="Target" value={drafts.target} onChange={updateLinkTarget} options={LINK_TARGETS} testId="editor-link-target" />
+                <EditorField label="Relationship" value={drafts.rel} onChange={(value) => updateDraft('rel', value)} mono testId="editor-link-rel" />
+              </div>
+            </EditorSection>
+          )}
+
+          <EditorSection title="Layout & appearance" testId="editor-style-controls">
+            <div className="grid grid-cols-2 gap-2">
+              <StyleField label="Width" property="width" style={drafts.style} onChange={updateStyle} placeholder="auto" />
+              <StyleField label="Height" property="height" style={drafts.style} onChange={updateStyle} placeholder="auto" />
+              <StyleField label="Padding" property="padding" style={drafts.style} onChange={updateStyle} placeholder="0" />
+              <StyleField label="Margin" property="margin" style={drafts.style} onChange={updateStyle} placeholder="0" />
+              <StyleField label="Gap" property="gap" style={drafts.style} onChange={updateStyle} placeholder="0" />
+              <StyleField label="Radius" property="border-radius" style={drafts.style} onChange={updateStyle} placeholder="0" />
+              <StyleField label="Font size" property="font-size" style={drafts.style} onChange={updateStyle} placeholder="inherit" />
+              <StyleField label="Line height" property="line-height" style={drafts.style} onChange={updateStyle} placeholder="normal" />
+              <StyleField label="Text color" property="color" style={drafts.style} onChange={updateStyle} placeholder="inherit" />
+              <StyleField label="Background" property="background-color" style={drafts.style} onChange={updateStyle} placeholder="transparent" />
+              <StyleSelect label="Text align" property="text-align" style={drafts.style} onChange={updateStyle} options={TEXT_ALIGN_OPTIONS} />
+              <StyleSelect label="Display" property="display" style={drafts.style} onChange={updateStyle} options={DISPLAY_OPTIONS} />
+              <StyleField label="Opacity" property="opacity" style={drafts.style} onChange={updateStyle} placeholder="1" />
+              <StyleField label="Translate" property="translate" style={drafts.style} onChange={updateStyle} placeholder="0 0" />
+            </div>
+          </EditorSection>
+
+          <details className="border-t border-zinc-800 pt-3" data-testid="editor-advanced-controls">
+            <summary className="cursor-pointer select-none text-xs font-semibold text-zinc-300">HTML attributes</summary>
+            <div className="mt-3 space-y-3">
+              <EditorField label="Element ID" value={drafts.id} onChange={(value) => updateDraft('id', value)} mono testId="editor-id" />
+              <EditorField label="Classes" value={drafts.class} onChange={(value) => updateDraft('class', value)} mono testId="editor-class" />
+              <EditorField label="Title" value={drafts.title} onChange={(value) => updateDraft('title', value)} testId="editor-title" />
+              <EditorField label="ARIA label" value={drafts['aria-label']} onChange={(value) => updateDraft('aria-label', value)} testId="editor-aria-label" />
+              <EditorField label="Role" value={drafts.role} onChange={(value) => updateDraft('role', value)} mono testId="editor-role" />
+              <EditorField label="Inline CSS" value={drafts.style} onChange={(value) => updateDraft('style', value)} mono multiLine testId="editor-style" />
+            </div>
+          </details>
 
           {error && (
             <div
@@ -543,73 +465,196 @@ function EditorInspector({
               {error}
             </div>
           )}
+
+          <div className="sticky bottom-0 -mx-3 flex items-center gap-2 border-t border-zinc-800 bg-zinc-950/95 px-3 py-3 backdrop-blur" data-testid="editor-save-bar">
+            <button
+              type="button"
+              onClick={() => setDrafts(createEditorDrafts(selection))}
+              disabled={busy || dirtyEdits.length === 0}
+              className="rounded-md border border-zinc-700 px-3 py-2 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+              data-testid="editor-reset-drafts"
+            >
+              Reset
+            </button>
+            <button
+              type="button"
+              onClick={applyChanges}
+              disabled={busy || dirtyEdits.length === 0 || invalidRequiredEdit}
+              aria-busy={busy}
+              className="min-w-0 flex-1 rounded-md bg-violet-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50"
+              data-testid="editor-save-changes"
+            >
+              {busy ? 'Saving…' : dirtyEdits.length > 0 ? `Save ${dirtyEdits.length} change${dirtyEdits.length === 1 ? '' : 's'}` : 'No changes'}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-rose-800/70 px-3 py-2 text-xs font-medium text-rose-300 transition-colors hover:border-rose-500 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            data-testid="editor-delete-selection"
+          >
+            <TrashIcon />
+            Delete element
+          </button>
         </div>
       )}
     </section>
   );
 }
 
-interface EditorInputControlProps {
+type EditorDrafts = Record<EditorEditField, string>;
+
+const EDITOR_DRAFT_FIELDS: EditorEditField[] = [
+  'text', 'src', 'alt', 'href', 'target', 'rel', 'title', 'id', 'class', 'style',
+  'role', 'aria-label', 'name', 'type', 'value', 'placeholder',
+];
+
+const LINK_TARGETS = [
+  { value: '', label: 'Same tab' },
+  { value: '_blank', label: 'New tab' },
+  { value: '_self', label: 'Current frame' },
+  { value: '_parent', label: 'Parent frame' },
+  { value: '_top', label: 'Top frame' },
+];
+
+const TEXT_ALIGN_OPTIONS = [
+  { value: '', label: 'Inherited' }, { value: 'left', label: 'Left' },
+  { value: 'center', label: 'Center' }, { value: 'right', label: 'Right' },
+  { value: 'justify', label: 'Justify' },
+];
+
+const DISPLAY_OPTIONS = [
+  { value: '', label: 'Default' }, { value: 'block', label: 'Block' },
+  { value: 'inline', label: 'Inline' }, { value: 'inline-block', label: 'Inline block' },
+  { value: 'flex', label: 'Flex' }, { value: 'grid', label: 'Grid' },
+  { value: 'none', label: 'Hidden' },
+];
+
+const EDITOR_INPUT_CLASS = 'mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-2 text-xs text-zinc-100 outline-none transition-colors placeholder:text-zinc-600 focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20';
+const EDITOR_TEXTAREA_CLASS = `${EDITOR_INPUT_CLASS} min-h-24 resize-y leading-relaxed`;
+
+function createEditorDrafts(selection: EditorSelection | null): EditorDrafts {
+  return {
+    text: selection?.text ?? '', src: selection?.src ?? '', alt: selection?.alt ?? '',
+    href: selection?.href ?? '', target: selection?.target ?? '', rel: selection?.rel ?? '',
+    title: selection?.title ?? '', id: selection?.elementId ?? '', class: selection?.className ?? '',
+    style: selection?.style ?? '', role: selection?.role ?? '', 'aria-label': selection?.ariaLabel ?? '',
+    name: selection?.name ?? '', type: selection?.inputType ?? '', value: selection?.value ?? '',
+    placeholder: selection?.placeholder ?? '',
+  };
+}
+
+function editorSelectionValue(selection: EditorSelection, field: EditorEditField): string {
+  return createEditorDrafts(selection)[field];
+}
+
+function EditorSection({ title, testId, children }: { title: string; testId: string; children: ReactNode }) {
+  return (
+    <div className="space-y-3 border-t border-zinc-800 pt-3" data-testid={testId}>
+      <h4 className="text-xs font-semibold text-zinc-300">{title}</h4>
+      {children}
+    </div>
+  );
+}
+
+interface EditorFieldProps {
   label: string;
   value: string;
-  currentValue: string;
   onChange: (value: string) => void;
-  onApply: () => void;
-  disabled: boolean;
   mono?: boolean;
   multiLine?: boolean;
   testId: string;
 }
 
-function EditorInputControl({
+function EditorField({
   label,
   value,
-  currentValue,
   onChange,
-  onApply,
-  disabled,
   mono = false,
   multiLine = false,
   testId,
-}: EditorInputControlProps) {
-  const dirty = value.trim() !== currentValue.trim();
-  const inputCls = `mt-1 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 outline-none transition-colors focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30 ${mono ? 'font-mono' : ''}`;
+}: EditorFieldProps) {
+  const inputClass = `${multiLine ? EDITOR_TEXTAREA_CLASS : EDITOR_INPUT_CLASS} ${mono ? 'font-mono' : ''}`;
   return (
-    <div className="space-y-2">
-      <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+    <label className="block text-[11px] font-medium text-zinc-400">
         {label}
         {multiLine ? (
           <textarea
             value={value}
             onChange={(event) => onChange(event.target.value)}
             rows={3}
-            className={`${inputCls} min-h-20 resize-y`}
+            className={inputClass}
             data-testid={`${testId}-input`}
           />
         ) : (
           <input
             value={value}
             onChange={(event) => onChange(event.target.value)}
-            className={inputCls}
+            className={inputClass}
             data-testid={`${testId}-input`}
           />
         )}
-      </label>
-      <button
-        type="button"
-        onClick={onApply}
-        disabled={disabled || !dirty}
-        className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:border-violet-400 hover:bg-violet-500/10 hover:text-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
-        data-testid={`${testId}-apply`}
-      >
-        Apply {label.toLowerCase()}
-      </button>
-    </div>
+    </label>
   );
+}
+
+type SelectOption = { value: string; label: string };
+
+function EditorSelect({ label, value, onChange, options, testId }: {
+  label: string; value: string; onChange: (value: string) => void; options: SelectOption[]; testId: string;
+}) {
+  const allOptions = value && !options.some((option) => option.value === value)
+    ? [{ value, label: value }, ...options]
+    : options;
+  return (
+    <label className="block text-[11px] font-medium text-zinc-400">
+      {label}
+      <select value={value} onChange={(event) => onChange(event.target.value)} className={EDITOR_INPUT_CLASS} data-testid={`${testId}-input`}>
+        {allOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
+  );
+}
+
+function StyleField({ label, property, style, onChange, placeholder }: {
+  label: string; property: string; style: string; onChange: (property: string, value: string) => void; placeholder: string;
+}) {
+  return (
+    <label className="block text-[11px] font-medium text-zinc-400">
+      {label}
+      <input
+        value={readEditorStyleProperty(style, property)}
+        onChange={(event) => onChange(property, event.target.value)}
+        placeholder={placeholder}
+        className={`${EDITOR_INPUT_CLASS} font-mono`}
+        data-testid={`editor-style-${property}`}
+      />
+    </label>
+  );
+}
+
+function StyleSelect({ label, property, style, onChange, options }: {
+  label: string; property: string; style: string; onChange: (property: string, value: string) => void; options: SelectOption[];
+}) {
+  const current = readEditorStyleProperty(style, property);
+  const allOptions = current && !options.some((option) => option.value === current)
+    ? [{ value: current, label: current }, ...options]
+    : options;
+  return <EditorSelect label={label} value={current} onChange={(value) => onChange(property, value)} options={allOptions} testId={`editor-style-${property}`} />;
 }
 
 function isEditableFormElement(tagName: string): boolean {
   return tagName === 'input' || tagName === 'textarea' || tagName === 'select';
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-4 w-4" aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  );
 }
 
 function ArrowUpIcon() {
