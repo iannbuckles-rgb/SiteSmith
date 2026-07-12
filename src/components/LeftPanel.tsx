@@ -312,9 +312,9 @@ interface ModeTabsProps {
 function ModeTabs({ mode, onChangeMode }: ModeTabsProps) {
   return (
     <div
-      className="flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
+      className="grid min-w-0 flex-1 grid-cols-5 gap-1"
       role="tablist"
-      aria-label="Bottom panel mode"
+      aria-label="Project tools"
     >
       <ModeTab
         active={mode === 'images'}
@@ -372,12 +372,14 @@ function ModeTab({ active, onClick, testId, icon, label }: ModeTabProps) {
       type="button"
       role="tab"
       aria-selected={active}
+      aria-label={label}
+      title={label}
       onClick={onClick}
-      className={`flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${cls}`}
+      className={`flex h-7 min-w-0 items-center justify-center rounded-md border transition-colors ${cls}`}
       data-testid={testId}
     >
       <span className={active ? 'text-violet-200' : 'text-zinc-500'}>{icon}</span>
-      <span>{label}</span>
+      <span className="sr-only">{label}</span>
     </button>
   );
 }

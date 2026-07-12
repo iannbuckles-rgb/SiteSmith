@@ -7,11 +7,13 @@ import {
 } from 'react';
 
 import { CenterPanel } from './components/CenterPanel';
+import { AppTopBar } from './components/AppTopBar';
 import { DialogShell } from './components/DialogShell';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LeftPanel } from './components/LeftPanel';
 import type { LogoHelperSuccessSummary } from './components/LogoHelperPanel';
 import { RightPanel } from './components/RightPanel';
+import { WorkspaceShell, type WorkspacePane } from './components/WorkspaceShell';
 import type { EditorReorderTarget, EditorSelection, PreviewHistoryState, PreviewMode, PreviewViewport } from './lib/previewControls';
 import { applyPlaceholder, applyRemove, applyReplacement } from './lib/assetReplacer';
 import { bulkReplace } from './lib/bulkReplace';
@@ -56,7 +58,6 @@ import type {
   ZipEntryMeta,
 } from './types';
 import { IDLE_PHASE, type Phase } from './lib/progress';
-import { TopBarProgress } from './components/TopBarProgress';
 import { Toast, type ToastData } from './components/Toast';
 import { formatBytes } from './lib/fileTypes';
 
@@ -112,19 +113,12 @@ type BulkConfirm = {
   preview: Array<{ key: string; rawUrl: string; sourceFile: string }>;
 };
 
-type ResponsivePane = 'left' | 'preview' | 'right';
 type OnboardingKind = 'upload' | 'restore';
 type OnboardingRun = {
   id: number;
   kind: OnboardingKind;
   controller: AbortController;
 };
-
-const RESPONSIVE_PANES: Array<{ id: ResponsivePane; label: string }> = [
-  { id: 'left', label: 'Files' },
-  { id: 'preview', label: 'Preview' },
-  { id: 'right', label: 'Tools' },
-];
 
 const THEME_STORAGE_KEY = 'mockswap:theme';
 
@@ -192,7 +186,7 @@ export default function App() {
 
   // Responsive shell state. Mobile shows one pane at a time; tablet keeps
   // files + preview visible and opens the right-side tools as a drawer.
-  const [activeMobilePane, setActiveMobilePane] = useState<ResponsivePane>('left');
+  const [activeMobilePane, setActiveMobilePane] = useState<WorkspacePane>('left');
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
   const [theme, setTheme] = useState<PersistedTheme>(() => readStoredTheme());
 
@@ -2659,7 +2653,7 @@ export default function App() {
       data-theme={theme}
       data-testid="app-root"
     >
-      <TopBar
+      <AppTopBar
         project={project}
         progress={busyPhase}
         saveAtRisk={saveAtRisk}
@@ -2679,39 +2673,13 @@ export default function App() {
           onDismiss={handleDismissRestore}
         />
       )}
-      <MobilePaneTabs
+      <WorkspaceShell
         activePane={activeMobilePane}
-        onChange={setActiveMobilePane}
-      />
-      <div className="hidden min-w-0 items-center justify-end border-b border-zinc-800 bg-zinc-950 px-3 py-2 md:flex xl:hidden">
-        <button
-          type="button"
-          onClick={() => setRightDrawerOpen(true)}
-          aria-expanded={rightDrawerOpen}
-          aria-controls="right-tools-drawer"
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:border-zinc-500 hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950"
-          data-testid="right-drawer-toggle"
-        >
-          Tools
-        </button>
-      </div>
-      {rightDrawerOpen && (
-        <button
-          type="button"
-          className="fixed inset-0 z-40 hidden bg-zinc-950/70 md:block xl:hidden"
-          onClick={() => setRightDrawerOpen(false)}
-          aria-label="Close tools panel"
-          data-testid="right-drawer-backdrop"
-        />
-      )}
-      <div
-        className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-[minmax(280px,320px)_minmax(0,1fr)] xl:grid-cols-[360px_minmax(0,1fr)_320px]"
-        data-testid="responsive-shell"
-      >
-        <div
-          className={`${activeMobilePane === 'left' ? 'block' : 'hidden'} h-full min-h-0 min-w-0 md:block`}
-          data-testid="left-pane-shell"
-        >
+        inspectorOpen={rightDrawerOpen}
+        onChangePane={setActiveMobilePane}
+        onOpenInspector={() => setRightDrawerOpen(true)}
+        onCloseInspector={() => setRightDrawerOpen(false)}
+        projectPane={(
           <LeftPanel
             project={project}
             isLoading={isLoading}
@@ -2773,11 +2741,8 @@ export default function App() {
             onClearBulkFile={handleClearBulkFile}
             onAskBulkConfirm={handleAskBulkConfirm}
           />
-        </div>
-        <div
-          className={`${activeMobilePane === 'preview' ? 'block' : 'hidden'} h-full min-h-0 min-w-0 border-x border-zinc-900 md:block`}
-          data-testid="preview-pane-shell"
-        >
+        )}
+        previewPane={(
           <ErrorBoundary
             title="Preview stopped rendering"
             description="The preview panel crashed, but the rest of the editor is still available. Reload to rebuild the view, or start fresh if a saved session keeps causing the crash."
@@ -2808,24 +2773,8 @@ export default function App() {
               editCount={patchesByKey.size}
             />
           </ErrorBoundary>
-        </div>
-        <div
-          id="right-tools-drawer"
-          className={`${activeMobilePane === 'right' ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-col bg-zinc-950 md:fixed md:inset-y-0 md:right-0 md:z-50 md:w-[min(360px,calc(100vw-2rem))] md:max-w-full md:shadow-2xl ${rightDrawerOpen ? 'md:flex' : 'md:hidden'} xl:static xl:z-auto xl:flex xl:w-auto xl:max-w-none xl:shadow-none`}
-          data-testid="right-pane-shell"
-        >
-          <div className="hidden shrink-0 items-center justify-between border-b border-zinc-800 bg-zinc-900 px-3 py-2 md:flex xl:hidden">
-            <h2 className="text-sm font-semibold text-zinc-100">Tools</h2>
-            <button
-              type="button"
-              onClick={() => setRightDrawerOpen(false)}
-              className="rounded-md border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
-              data-testid="right-drawer-close"
-            >
-              Close
-            </button>
-          </div>
-          <div className="min-h-0 flex-1">
+        )}
+        inspectorPane={(
             <RightPanel
               selectedDetection={selectedDetection}
               thumbnail={selectedThumbnail}
@@ -2863,9 +2812,8 @@ export default function App() {
               onDeleteEditorSelection={() => void handleDeleteEditorSelection()}
               onClearEditorSelection={handleClearEditorSelection}
             />
-          </div>
-        </div>
-      </div>
+        )}
+      />
       {bulkConfirm && (
         <BulkConfirmModal
           confirm={bulkConfirm}
@@ -2894,52 +2842,6 @@ export default function App() {
         />
       )}
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Responsive shell controls
-// ---------------------------------------------------------------------------
-
-function MobilePaneTabs({
-  activePane,
-  onChange,
-}: {
-  activePane: ResponsivePane;
-  onChange: (pane: ResponsivePane) => void;
-}) {
-  return (
-    <div
-      className="border-b border-zinc-800 bg-zinc-950 px-2 py-2 md:hidden"
-      data-testid="mobile-pane-tabs"
-    >
-      <div
-        className="grid min-w-0 grid-cols-3 gap-1 rounded-lg border border-zinc-800 bg-zinc-900/70 p-1"
-        role="tablist"
-        aria-label="Editor panes"
-      >
-        {RESPONSIVE_PANES.map((pane) => {
-          const active = pane.id === activePane;
-          return (
-            <button
-              key={pane.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => onChange(pane.id)}
-              className={`min-w-0 rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 ${
-                active
-                  ? 'bg-violet-600 text-white shadow-sm'
-                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
-              }`}
-              data-testid={`mobile-pane-${pane.id}`}
-            >
-              <span className="block truncate">{pane.label}</span>
-            </button>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -3514,112 +3416,4 @@ function blobToFileShim(blob: Blob, name: string): File {
   // Older test/browser surfaces may lack File while still accepting Blob
   // uploads through JSZip and structured clone.
   return blob as File;
-}
-
-// ---------------------------------------------------------------------------
-// Top bar
-// ---------------------------------------------------------------------------
-
-function TopBar({
-  project,
-  progress,
-  saveAtRisk,
-  projectSaveBusy,
-  projectMutationBusy,
-  theme,
-  onSaveProject,
-  onSaveProjectAs,
-  onToggleTheme,
-  onCancelOnboarding,
-}: {
-  project: LoadedProject | null;
-  progress: Phase;
-  saveAtRisk: boolean;
-  projectSaveBusy: boolean;
-  projectMutationBusy: boolean;
-  theme: PersistedTheme;
-  onSaveProject: () => void;
-  onSaveProjectAs: () => void;
-  onToggleTheme: () => void;
-  onCancelOnboarding: () => void;
-}) {
-  const nextTheme = theme === 'dark' ? 'light' : 'dark';
-  const canSaveProject = project !== null && !projectSaveBusy && !projectMutationBusy;
-  const saveTitle = projectMutationBusy
-    ? 'Finish the current edit before saving'
-    : 'Save project to Projects';
-
-  return (
-    <header className="flex min-w-0 items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/80 px-3 py-2 backdrop-blur sm:px-4">
-      <div className="flex min-w-0 items-center gap-2">
-        <img
-          src="/ms-logo.png"
-          alt=""
-          aria-hidden="true"
-          className="h-7 w-7 shrink-0 rounded-md object-contain"
-        />
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-semibold leading-tight text-zinc-100">MockupSwap</h1>
-          <p className="hidden truncate text-[11px] leading-tight text-zinc-500 sm:block">
-            Local browser tool for swapping images in website mockups
-          </p>
-        </div>
-      </div>
-      <div className="ml-auto flex max-w-[58vw] min-w-0 items-center justify-end gap-2 text-[11px] text-zinc-500">
-        {project ? (
-          <span className="min-w-0 max-w-full truncate rounded-full bg-zinc-800 px-2 py-0.5 text-zinc-300">
-            {project.fileName}
-          </span>
-        ) : (
-          <span className="shrink-0 rounded-full bg-zinc-800 px-2 py-0.5">
-            no project loaded
-          </span>
-        )}
-        {project && saveAtRisk && (
-          <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-950/60 px-2 py-0.5 font-medium text-amber-200">
-            save at risk
-          </span>
-        )}
-        <TopBarProgress
-          phase={progress}
-          onCancel={progress.kind === 'detecting' ? onCancelOnboarding : undefined}
-        />
-        {project && (
-          <>
-            <button
-              type="button"
-              onClick={onSaveProject}
-              disabled={!canSaveProject}
-              aria-busy={projectSaveBusy}
-              title={saveTitle}
-              className="shrink-0 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
-              data-testid="save-project-button"
-            >
-              {projectSaveBusy ? 'Saving…' : 'Save project'}
-            </button>
-            <button
-              type="button"
-              onClick={onSaveProjectAs}
-              disabled={!canSaveProject}
-              title={projectMutationBusy ? 'Finish the current edit before saving' : 'Save project as a new Projects record'}
-              className="hidden shrink-0 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 sm:inline-flex"
-              data-testid="save-project-as-button"
-            >
-              Save as
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={onToggleTheme}
-          aria-pressed={theme === 'light'}
-          title={`Switch to ${nextTheme} theme`}
-          className="shrink-0 rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
-          data-testid="theme-toggle"
-        >
-          {theme === 'dark' ? 'Dark' : 'Light'}
-        </button>
-      </div>
-    </header>
-  );
 }
