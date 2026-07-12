@@ -56,9 +56,28 @@ const ATTR_BY_FIELD: Partial<Record<EditorEditField, string>> = {
   src: 'src',
   alt: 'alt',
   href: 'href',
+  id: 'id',
   class: 'class',
   style: 'style',
+  role: 'role',
+  'aria-label': 'aria-label',
+  name: 'name',
+  type: 'type',
+  value: 'value',
+  placeholder: 'placeholder',
 };
+
+const REQUIRED_ATTRIBUTE_FIELDS = new Set<EditorEditField>(['src', 'href']);
+const REMOVE_WHEN_EMPTY_FIELDS = new Set<EditorEditField>([
+  'id',
+  'class',
+  'style',
+  'role',
+  'aria-label',
+  'name',
+  'type',
+  'placeholder',
+]);
 
 export async function applyEditorEdit(
   project: LoadedProject,
@@ -81,15 +100,15 @@ export async function applyEditorEdit(
   let currentOpenStart = openingRange.start;
   let currentOpenEnd = openingRange.end;
 
-  const attributeEdits = normalizedEdits.filter((edit) => edit.field !== 'text');
+  const attributeEdits = normalizedEdits.filter((edit) => !writesElementText(tagName, edit.field));
   for (const edit of attributeEdits) {
     const attr = ATTR_BY_FIELD[edit.field];
     if (!attr) continue;
-    if ((attr === 'src' || attr === 'href') && edit.newValue.trim().length === 0) {
+    if (REQUIRED_ATTRIBUTE_FIELDS.has(edit.field) && edit.newValue.trim().length === 0) {
       throw new Error(`${attr} cannot be empty.`);
     }
     const opening = currentSourceText.slice(currentOpenStart, currentOpenEnd);
-    const nextOpening = setAttribute(opening, attr, edit.newValue, attr === 'class' || attr === 'style');
+    const nextOpening = setAttribute(opening, attr, edit.newValue, REMOVE_WHEN_EMPTY_FIELDS.has(edit.field));
     if (nextOpening !== opening) {
       currentSourceText = currentSourceText.slice(0, currentOpenStart)
         + nextOpening
@@ -98,7 +117,7 @@ export async function applyEditorEdit(
     }
   }
 
-  const textEdit = normalizedEdits.find((edit) => edit.field === 'text');
+  const textEdit = normalizedEdits.find((edit) => writesElementText(tagName, edit.field));
   if (textEdit) {
     if (VOID_TAGS.has(tagName)) {
       throw new Error(`<${tagName}> cannot contain editable text.`);
@@ -330,8 +349,15 @@ function normalizeEdits(
     src: selection.src ?? '',
     alt: selection.alt ?? '',
     href: selection.href ?? '',
+    id: selection.elementId ?? '',
     class: selection.className ?? '',
     style: selection.style ?? '',
+    role: selection.role ?? '',
+    'aria-label': selection.ariaLabel ?? '',
+    name: selection.name ?? '',
+    type: selection.inputType ?? '',
+    value: selection.value ?? '',
+    placeholder: selection.placeholder ?? '',
   };
   const out: EditorAppliedEdit[] = [];
   for (const edit of edits) {
@@ -343,6 +369,10 @@ function normalizeEdits(
     out.push({ field: edit.field, oldValue, newValue });
   }
   return out;
+}
+
+function writesElementText(tagName: string, field: EditorEditField): boolean {
+  return field === 'text' || (field === 'value' && tagName === 'textarea');
 }
 
 function locateOpeningTag(source: string, selection: ReorderLocator): OpenTagRange {

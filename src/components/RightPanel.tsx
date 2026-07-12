@@ -237,8 +237,15 @@ function EditorInspector({
   const [srcDraft, setSrcDraft] = useState('');
   const [altDraft, setAltDraft] = useState('');
   const [hrefDraft, setHrefDraft] = useState('');
+  const [idDraft, setIdDraft] = useState('');
   const [classDraft, setClassDraft] = useState('');
   const [styleDraft, setStyleDraft] = useState('');
+  const [roleDraft, setRoleDraft] = useState('');
+  const [ariaLabelDraft, setAriaLabelDraft] = useState('');
+  const [nameDraft, setNameDraft] = useState('');
+  const [typeDraft, setTypeDraft] = useState('');
+  const [valueDraft, setValueDraft] = useState('');
+  const [placeholderDraft, setPlaceholderDraft] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -246,8 +253,15 @@ function EditorInspector({
     setSrcDraft(selection?.src ?? '');
     setAltDraft(selection?.alt ?? '');
     setHrefDraft(selection?.href ?? '');
+    setIdDraft(selection?.elementId ?? '');
     setClassDraft(selection?.className ?? '');
     setStyleDraft(selection?.style ?? '');
+    setRoleDraft(selection?.role ?? '');
+    setAriaLabelDraft(selection?.ariaLabel ?? '');
+    setNameDraft(selection?.name ?? '');
+    setTypeDraft(selection?.inputType ?? '');
+    setValueDraft(selection?.value ?? '');
+    setPlaceholderDraft(selection?.placeholder ?? '');
   }, [selection]);
 
   const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -255,6 +269,11 @@ function EditorInspector({
     event.currentTarget.value = '';
     if (file) onApplyImageFile(file);
   }, [onApplyImageFile]);
+
+  const isFormSelection = !!selection && isEditableFormElement(selection.tagName);
+  const canEditFormValue = !!selection && (selection.tagName === 'input' || selection.tagName === 'textarea');
+  const canEditPlaceholder = !!selection && (selection.tagName === 'input' || selection.tagName === 'textarea');
+  const canEditType = !!selection && selection.tagName === 'input';
 
   return (
     <section
@@ -412,9 +431,86 @@ function EditorInspector({
                 testId="editor-image-alt"
               />
             </div>
+          ) : isFormSelection ? (
+            <div className="space-y-3" data-testid="editor-form-controls">
+              {canEditFormValue && (
+                <EditorInputControl
+                  label="Value"
+                  value={valueDraft}
+                  currentValue={selection.value ?? ''}
+                  onChange={setValueDraft}
+                  onApply={() => onApplyField('value', valueDraft)}
+                  disabled={busy}
+                  mono
+                  testId="editor-form-value"
+                />
+              )}
+              {canEditPlaceholder && (
+                <EditorInputControl
+                  label="Placeholder"
+                  value={placeholderDraft}
+                  currentValue={selection.placeholder ?? ''}
+                  onChange={setPlaceholderDraft}
+                  onApply={() => onApplyField('placeholder', placeholderDraft)}
+                  disabled={busy}
+                  testId="editor-form-placeholder"
+                />
+              )}
+              <EditorInputControl
+                label="Name"
+                value={nameDraft}
+                currentValue={selection.name ?? ''}
+                onChange={setNameDraft}
+                onApply={() => onApplyField('name', nameDraft)}
+                disabled={busy}
+                mono
+                testId="editor-form-name"
+              />
+              {canEditType && (
+                <EditorInputControl
+                  label="Input type"
+                  value={typeDraft}
+                  currentValue={selection.inputType ?? ''}
+                  onChange={setTypeDraft}
+                  onApply={() => onApplyField('type', typeDraft)}
+                  disabled={busy}
+                  mono
+                  testId="editor-form-type"
+                />
+              )}
+            </div>
           ) : null}
 
           <div className="space-y-3 border-t border-zinc-800 pt-3" data-testid="editor-advanced-controls">
+            <EditorInputControl
+              label="Element ID"
+              value={idDraft}
+              currentValue={selection.elementId ?? ''}
+              onChange={setIdDraft}
+              onApply={() => onApplyField('id', idDraft)}
+              disabled={busy}
+              mono
+              testId="editor-id"
+            />
+            <EditorInputControl
+              label="ARIA label"
+              value={ariaLabelDraft}
+              currentValue={selection.ariaLabel ?? ''}
+              onChange={setAriaLabelDraft}
+              onApply={() => onApplyField('aria-label', ariaLabelDraft)}
+              disabled={busy}
+              testId="editor-aria-label"
+            />
+            <EditorInputControl
+              label="Role"
+              value={roleDraft}
+              currentValue={selection.role ?? ''}
+              onChange={setRoleDraft}
+              onApply={() => onApplyField('role', roleDraft)}
+              disabled={busy}
+              mono
+              testId="editor-role"
+            />
             <EditorInputControl
               label="Classes"
               value={classDraft}
@@ -510,6 +606,10 @@ function EditorInputControl({
       </button>
     </div>
   );
+}
+
+function isEditableFormElement(tagName: string): boolean {
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }
 
 function ArrowUpIcon() {

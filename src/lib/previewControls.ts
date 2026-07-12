@@ -44,6 +44,12 @@ export interface EditorSelection {
   elementId?: string;
   className?: string;
   style?: string;
+  role?: string;
+  ariaLabel?: string;
+  name?: string;
+  inputType?: string;
+  value?: string;
+  placeholder?: string;
   hasElementChildren?: boolean;
   text?: string;
   src?: string;

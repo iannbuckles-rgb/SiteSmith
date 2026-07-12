@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import JSZip from 'jszip';
 
 import { applyEditorDelete, applyEditorEdit, applyEditorNudge, applyEditorReorder } from '../src/lib/editorPatch';
-import { buildReport } from '../src/lib/exportService';
+import { buildExport, buildReport } from '../src/lib/exportService';
 import { undoPatchById } from '../src/lib/undoStack';
 import type { EditorSelection } from '../src/lib/previewControls';
 import { makeProject, zipText } from './helpers';
@@ -64,6 +65,131 @@ describe('applyEditorEdit', () => {
 
     expect(await zipText(project, 'index.html')).toBe('<img src="hero.png" alt="New hero" class="hero hero--wide" style="object-fit: cover">');
     expect(patch.edits.map((edit) => edit.field)).toEqual(['alt', 'class', 'style']);
+  });
+
+  it('updates component metadata attributes without replacing nearby elements', async () => {
+    const source = '<section><div class="card">One</div><div id="target" class="card">Two</div></section>';
+    const targetStart = source.indexOf('<div id="target"');
+    const project = makeProject({ 'index.html': source });
+
+    const patch = await applyEditorEdit(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'element',
+        tagName: 'div',
+        label: 'Two',
+        elementId: 'target',
+        className: 'card',
+        sourceStart: targetStart,
+        sourceEnd: source.indexOf('>', targetStart) + 1,
+        selectorHint: 'div#target.card',
+      },
+      edits: [
+        { field: 'id', newValue: 'feature-card' },
+        { field: 'role', newValue: 'region' },
+        { field: 'aria-label', newValue: 'Featured card' },
+      ],
+    });
+
+    expect(await zipText(project, 'index.html')).toBe(
+      '<section><div class="card">One</div><div id="feature-card" class="card" role="region" aria-label="Featured card">Two</div></section>',
+    );
+
+    undoPatchById(project, patch);
+    expect(await zipText(project, 'index.html')).toBe(source);
+  });
+
+  it('updates form input metadata and allows clearing the value attribute', async () => {
+    const source = '<form><input name="email" type="email" value="old@example.com" placeholder="Email"></form>';
+    const inputStart = source.indexOf('<input');
+    const project = makeProject({ 'index.html': source });
+
+    await applyEditorEdit(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'element',
+        tagName: 'input',
+        label: 'email',
+        name: 'email',
+        inputType: 'email',
+        value: 'old@example.com',
+        placeholder: 'Email',
+        sourceStart: inputStart,
+        sourceEnd: source.indexOf('>', inputStart) + 1,
+        selectorHint: 'input',
+      },
+      edits: [
+        { field: 'name', newValue: 'workEmail' },
+        { field: 'type', newValue: 'text' },
+        { field: 'value', newValue: '' },
+        { field: 'placeholder', newValue: 'Work email' },
+      ],
+    });
+
+    expect(await zipText(project, 'index.html')).toBe(
+      '<form><input name="workEmail" type="text" value="" placeholder="Work email"></form>',
+    );
+  });
+
+  it('writes textarea value edits as escaped text content', async () => {
+    const source = '<form><textarea name="message" placeholder="Message">Old message</textarea></form>';
+    const textareaStart = source.indexOf('<textarea');
+    const project = makeProject({ 'index.html': source });
+
+    const patch = await applyEditorEdit(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'element',
+        tagName: 'textarea',
+        label: 'Message',
+        name: 'message',
+        value: 'Old message',
+        placeholder: 'Message',
+        sourceStart: textareaStart,
+        sourceEnd: source.indexOf('>', textareaStart) + 1,
+        selectorHint: 'textarea',
+      },
+      edits: [{ field: 'value', newValue: 'New <safe> message' }],
+    });
+
+    expect(await zipText(project, 'index.html')).toBe(
+      '<form><textarea name="message" placeholder="Message">New &lt;safe&gt; message</textarea></form>',
+    );
+
+    undoPatchById(project, patch);
+    expect(await zipText(project, 'index.html')).toBe(source);
+  });
+
+  it('persists direct editor edits into the generated export zip', async () => {
+    const source = '<main><section id="hero" aria-label="Old">Hero</section></main>';
+    const project = makeProject({ 'index.html': source });
+    const sectionStart = source.indexOf('<section');
+
+    const patch = await applyEditorEdit(project, {
+      selection: {
+        sourceFile: 'index.html',
+        kind: 'element',
+        tagName: 'section',
+        label: 'Hero',
+        elementId: 'hero',
+        ariaLabel: 'Old',
+        sourceStart: sectionStart,
+        sourceEnd: source.indexOf('>', sectionStart) + 1,
+        selectorHint: 'section#hero',
+      },
+      edits: [
+        { field: 'aria-label', newValue: 'Updated hero' },
+        { field: 'role', newValue: 'banner' },
+      ],
+    });
+
+    const exported = await buildExport(project, [patch], []);
+    const zip = await JSZip.loadAsync(exported.blob);
+
+    await expect(zip.file('index.html')?.async('text')).resolves.toBe(
+      '<main><section id="hero" aria-label="Updated hero" role="banner">Hero</section></main>',
+    );
+    await expect(zip.file('MOCKUPSWAP_CHANGES.md')?.async('text')).resolves.toContain('Direct editor edits');
   });
 
   it('reports direct editor edits in the export audit', async () => {

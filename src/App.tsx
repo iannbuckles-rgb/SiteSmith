@@ -238,6 +238,28 @@ export default function App() {
   const saveFailureToastShownRef = useRef(false);
   const saveFailureToastIdRef = useRef<string | null>(null);
   const editorNudgeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const patchesByKeyRef = useRef<Map<string, AppliedPatch>>(new Map());
+
+  const updatePatchesByKey = useCallback((updater: (current: Map<string, AppliedPatch>) => Map<string, AppliedPatch>) => {
+    setPatchesByKey((current) => {
+      const next = updater(current);
+      patchesByKeyRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const replacePatchesByKey = useCallback((next: Map<string, AppliedPatch>) => {
+    patchesByKeyRef.current = next;
+    setPatchesByKey(next);
+  }, []);
+
+  const flushPendingEditorWrites = useCallback(async () => {
+    try {
+      await editorNudgeQueueRef.current;
+    } catch {
+      // Nudge failures are already surfaced in the editor error slot.
+    }
+  }, []);
 
   const pushToast = useCallback((toast: Omit<ToastData, 'id' | 'expiresAt'> & { autoDismiss?: boolean }) => {
     const id = `toast-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -283,6 +305,10 @@ export default function App() {
       // still carries the preference when project state can be saved.
     }
   }, [theme]);
+
+  useEffect(() => {
+    patchesByKeyRef.current = patchesByKey;
+  }, [patchesByKey]);
 
   const handleToggleTheme = useCallback(() => {
     setTheme((current) => (current === 'dark' ? 'light' : 'dark'));
@@ -491,6 +517,14 @@ export default function App() {
     [patchesByKey],
   );
 
+  const projectMutationBusy = replacementBusy
+    || brokenBusy
+    || fitStyleBusy
+    || logoHelperBusy
+    || manualReplaceBusy
+    || bulkBusy
+    || editorBusy;
+
   // ------------------------------------------------------------------------
   // Handlers
   // ------------------------------------------------------------------------
@@ -638,7 +672,7 @@ export default function App() {
       setOriginalBlob(original);
       const patches: Map<string, AppliedPatch> = new Map();
       for (const p of priorPatches) patches.set(p.id, p);
-      setPatchesByKey(patches);
+      replacePatchesByKey(patches);
       setSelectedDetectionKey(priorSelection?.selectedDetectionKey ?? null);
       if (priorSelection?.currentPagePath) {
         // Mirror onto the ref so the preview-rebuild effect's functional
@@ -664,7 +698,7 @@ export default function App() {
         setBusyPhase(IDLE_PHASE);
       }
     }
-  }, [beginOnboardingRun, clearOnboardingRun, ensureOnboardingActive]);
+  }, [beginOnboardingRun, clearOnboardingRun, ensureOnboardingActive, replacePatchesByKey]);
 
   const handleRestoreSession = useCallback(() => {
     if (!restoreBanner) return;
@@ -755,9 +789,10 @@ export default function App() {
 
   const buildCurrentProjectSnapshot = useCallback(async (): Promise<PersistedProjectSnapshot | null> => {
     if (!project) return null;
+    await flushPendingEditorWrites();
     const mutatedZipBlob = await project.zip.generateAsync({ type: 'blob', compression: 'STORE' });
     // patchesByKey Map → JSON-safe Array
-    const patches = Array.from(patchesByKey.entries()).map(([id, patch]) => ({ id, patch }));
+    const patches = Array.from(patchesByKeyRef.current.entries()).map(([id, patch]) => ({ id, patch }));
     const selection = buildCurrentSelection();
     return {
       projectMeta: {
@@ -777,10 +812,18 @@ export default function App() {
       selection,
       theme,
     };
-  }, [project, patchesByKey, buildCurrentSelection, originalBlob, theme]);
+  }, [project, flushPendingEditorWrites, buildCurrentSelection, originalBlob, theme]);
 
   const saveProjectToLibrary = useCallback(async (mode: 'save' | 'save-as'): Promise<string | null> => {
     if (!project || projectSaveBusy) return null;
+    if (projectMutationBusy) {
+      pushToast({
+        kind: 'warning',
+        title: 'Save is waiting on an edit',
+        detail: 'Let the current editor change finish, then save again so the project record matches the zip.',
+      });
+      return null;
+    }
     const reuseExisting = mode === 'save' && projectRecordIdRef.current !== null;
     const id = reuseExisting ? projectRecordIdRef.current! : createProjectRecordId();
     let name = reuseExisting ? (projectRecordNameRef.current ?? project.fileName) : '';
@@ -835,7 +878,7 @@ export default function App() {
     } finally {
       setProjectSaveBusy(false);
     }
-  }, [project, projectSaveBusy, buildCurrentProjectSnapshot, pushToast, updateProjectRecordIdentity]);
+  }, [project, projectSaveBusy, projectMutationBusy, buildCurrentProjectSnapshot, pushToast, updateProjectRecordIdentity]);
 
   const handleSaveProject = useCallback(() => {
     void saveProjectToLibrary('save');
@@ -847,6 +890,10 @@ export default function App() {
 
   const handleSaveCheckpoint = useCallback(async () => {
     if (!project || checkpointSaveBusy || projectSaveBusy) return;
+    if (projectMutationBusy) {
+      setHistoryError('Let the current editor change finish before saving a checkpoint.');
+      return;
+    }
     setHistoryError(null);
 
     let projectId = projectRecordIdRef.current;
@@ -899,6 +946,7 @@ export default function App() {
     project,
     checkpointSaveBusy,
     projectSaveBusy,
+    projectMutationBusy,
     saveProjectToLibrary,
     buildCurrentProjectSnapshot,
     refreshCheckpoints,
@@ -999,6 +1047,14 @@ export default function App() {
 
   const handleExport = useCallback(async () => {
     if (!project || exportState === 'busy') return;
+    if (projectMutationBusy) {
+      pushToast({
+        kind: 'warning',
+        title: 'Export is waiting on an edit',
+        detail: 'Let the current editor change finish, then export again so the zip includes it.',
+      });
+      return;
+    }
     setExportState('busy');
     setExportError(null);
     // Capture startedAt once so the TopBar label's elapsed-time keeps
@@ -1007,7 +1063,8 @@ export default function App() {
     const startedAt = Date.now();
     setBusyPhase({ kind: 'exporting', progress: 0, startedAt });
     try {
-      const patches = Array.from(patchesByKey.values());
+      await flushPendingEditorWrites();
+      const patches = Array.from(patchesByKeyRef.current.values());
       const exportResult = project.zip instanceof WorkerZipArchive
         ? await getProjectWorkerClient().buildExport({
           projectId: project.zip.projectId,
@@ -1071,7 +1128,7 @@ export default function App() {
       // retain their out-of-band semantic independent of this one.
       setBusyPhase({ kind: 'idle' });
     }
-  }, [project, exportState, patchesByKey, detections, pushToast]);
+  }, [project, exportState, projectMutationBusy, flushPendingEditorWrites, detections, pushToast]);
 
   const handleExportAgain = useCallback(() => {
     setExportState('idle');
@@ -1289,7 +1346,7 @@ export default function App() {
         previousSourceValue: prevSourceValue,
       });
 
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -1325,7 +1382,7 @@ export default function App() {
     } finally {
       setReplacementBusy(false);
     }
-  }, [replacementBusy, bulkBusy, project, pendingFile, selectedDetection, patchesByKey, webpReencode]);
+  }, [replacementBusy, bulkBusy, project, pendingFile, selectedDetection, patchesByKey, webpReencode, updatePatchesByKey]);
 
   // ------------------------------------------------------------------------
   // Undo / Reset handlers
@@ -1351,7 +1408,7 @@ export default function App() {
     if (target.action === 'manual-replace') {
       try {
         undoManualReplace(project, target);
-        setPatchesByKey((map) => {
+        updatePatchesByKey((map) => {
           const next = new Map(map);
           next.delete(patchId);
           return next;
@@ -1392,7 +1449,7 @@ export default function App() {
       .sort((a, b) => b.appliedAt - a.appliedAt);
     try {
       for (const p of cascade) undoPatchById(project, p);
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         for (const p of cascade) next.delete(p.id);
         return next;
@@ -1406,7 +1463,7 @@ export default function App() {
     } catch (err) {
       setHistoryError(err instanceof Error ? err.message : String(err));
     }
-  }, [project, patchesByKey]);
+  }, [project, patchesByKey, updatePatchesByKey]);
 
   const handleUndoLastChange = useCallback(() => {
     if (!project || patchesByKey.size === 0) return;
@@ -1425,7 +1482,7 @@ export default function App() {
     const sorted = Array.from(patchesByKey.values()).sort((a, b) => b.appliedAt - a.appliedAt);
     try {
       for (const p of sorted) undoPatchById(project, p);
-      setPatchesByKey(new Map());
+      replacePatchesByKey(new Map());
       setHistoryError(null);
       setPreviewRevision((r) => r + 1);
       setPreviewKey((k) => k + 1);
@@ -1435,7 +1492,7 @@ export default function App() {
     } catch (err) {
       setHistoryError(err instanceof Error ? err.message : String(err));
     }
-  }, [project, patchesByKey]);
+  }, [project, patchesByKey, replacePatchesByKey]);
 
   const handleRequestUndoAll = useCallback(() => {
     if (patchesByKey.size === 0) return;
@@ -1471,7 +1528,7 @@ export default function App() {
     }
     try {
       for (const p of related) undoPatchById(project, p);
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         for (const p of related) next.delete(p.id);
         return next;
@@ -1486,7 +1543,7 @@ export default function App() {
     } catch (err) {
       setHistoryError(err instanceof Error ? err.message : String(err));
     }
-  }, [project, selectedDetection, patchesByKey]);
+  }, [project, selectedDetection, patchesByKey, updatePatchesByKey]);
 
   const handleResetProject = useCallback(() => {
     if (!originalFile) {
@@ -1510,10 +1567,10 @@ export default function App() {
     void handleUpload(originalFile);
     setHistoryError(null);
     setLeftPanelMode('images');
-    setPatchesByKey(new Map());
+    replacePatchesByKey(new Map());
     setBulkPendingFile(null);
     setBulkConfirm(null);
-  }, [originalFile, handleUpload]);
+  }, [originalFile, handleUpload, replacePatchesByKey]);
 
   const handleReplaceAgain = useCallback(() => {
     const ref = selectedDetection ?? (selectedAppliedPatch as AppliedPatch | null);
@@ -1544,7 +1601,7 @@ export default function App() {
       const patch = action === 'remove'
         ? await applyRemove(project, selectedDetection)
         : await applyPlaceholder(project, selectedDetection);
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(id, patch);
         return next;
@@ -1559,7 +1616,7 @@ export default function App() {
     } finally {
       setBrokenBusy(false);
     }
-  }, [brokenBusy, project, selectedDetection, patchesByKey]);
+  }, [brokenBusy, project, selectedDetection, updatePatchesByKey]);
 
   // ------------------------------------------------------------------------
   // Fit & style
@@ -1598,7 +1655,7 @@ export default function App() {
         previousSourceText: sourceText,
         currentSourceText: result.sourceText,
       };
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(fitKey, patch);
         return next;
@@ -1613,7 +1670,7 @@ export default function App() {
     } finally {
       setFitStyleBusy(false);
     }
-  }, [fitStyleBusy, project, selectedDetection]);
+  }, [fitStyleBusy, project, selectedDetection, updatePatchesByKey]);
 
   const handleResetFitStyle = useCallback(() => {
     if (!selectedDetection) return;
@@ -1647,7 +1704,7 @@ export default function App() {
       if (patches.length === 0) {
         throw new Error('No changes were applied. Check that selected targets exist in this project.');
       }
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         for (const patch of patches) next.set(patch.id, patch);
         return next;
@@ -1674,7 +1731,7 @@ export default function App() {
     } finally {
       setLogoHelperBusy(false);
     }
-  }, [project, logoHelperBusy, logoCandidates]);
+  }, [project, logoHelperBusy, logoCandidates, updatePatchesByKey]);
 
   const handleResetLogoHelperSuccess = useCallback(() => {
     setLogoHelperSuccess(null);
@@ -1702,7 +1759,7 @@ export default function App() {
     setManualReplaceError(null);
     try {
       const { patch } = await applyManualReplace(project, input);
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -1717,7 +1774,7 @@ export default function App() {
     } finally {
       setManualReplaceBusy(false);
     }
-  }, [project, manualReplaceBusy]);
+  }, [project, manualReplaceBusy, updatePatchesByKey]);
 
   const handleUndoManualReplace = useCallback((patchId: string) => {
     if (!project) return;
@@ -1725,7 +1782,7 @@ export default function App() {
     if (!patch || patch.action !== 'manual-replace') return;
     try {
       undoManualReplace(project, patch);
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.delete(patchId);
         return next;
@@ -1739,7 +1796,7 @@ export default function App() {
     } catch (err) {
       setManualReplaceError(err instanceof Error ? err.message : String(err));
     }
-  }, [project, patchesByKey]);
+  }, [project, patchesByKey, updatePatchesByKey]);
 
   const handleApplyPreviewTextEdit = useCallback(async (input: {
     sourceFile: string;
@@ -1757,6 +1814,7 @@ export default function App() {
     if (!oldText || !newText || oldText === newText) return;
     if (!project.entries.some((entry) => !entry.isDirectory && entry.path === input.sourceFile)) return;
     setManualReplaceError(null);
+    setEditorBusy(true);
     try {
       const patch = input.tagName
         ? await applyEditorEdit(project, {
@@ -1780,7 +1838,7 @@ export default function App() {
           imageFile: null,
           customAssetFilename: '',
         })).patch;
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -1807,8 +1865,10 @@ export default function App() {
         title: "Couldn't save preview text edit",
         detail,
       });
+    } finally {
+      setEditorBusy(false);
     }
-  }, [project, pushToast]);
+  }, [project, pushToast, updatePatchesByKey]);
 
   const handleClearEditorSelection = useCallback(() => {
     setEditorClearSelectionSignal((value) => value + 1);
@@ -1828,7 +1888,7 @@ export default function App() {
         selection: editorSelection,
         edits: [{ field: 'text', oldValue: oldText, newValue: replacementText }],
       });
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -1857,7 +1917,7 @@ export default function App() {
     } finally {
       setEditorBusy(false);
     }
-  }, [project, editorBusy, editorSelection, pushToast]);
+  }, [project, editorBusy, editorSelection, pushToast, updatePatchesByKey]);
 
   const handleApplyEditorField = useCallback(async (field: Exclude<EditorEditField, 'text'>, value: string) => {
     if (!project || editorBusy || !editorSelection) return;
@@ -1874,7 +1934,7 @@ export default function App() {
         selection: editorSelection,
         edits: [{ field, oldValue: currentValue, newValue: nextValue }],
       });
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -1901,7 +1961,7 @@ export default function App() {
     } finally {
       setEditorBusy(false);
     }
-  }, [project, editorBusy, editorSelection, pushToast]);
+  }, [project, editorBusy, editorSelection, pushToast, updatePatchesByKey]);
 
   const handleApplyEditorImageFile = useCallback(async (file: File) => {
     if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'image') return;
@@ -1932,7 +1992,7 @@ export default function App() {
       const prev = patchesByKey.get(id);
       const prevSourceValue = prev?.action === 'replace' ? prev.currentSourceValue : undefined;
       const patch = await applyReplacement(project, detection, file, prevSourceValue);
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -1961,7 +2021,7 @@ export default function App() {
     } finally {
       setEditorBusy(false);
     }
-  }, [project, editorBusy, editorSelection, patchesByKey, pushToast]);
+  }, [project, editorBusy, editorSelection, patchesByKey, pushToast, updatePatchesByKey]);
 
   const handleApplyEditorReorder = useCallback(async (
     selection: EditorSelection,
@@ -1978,7 +2038,7 @@ export default function App() {
         reference,
         placement,
       });
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -2006,7 +2066,7 @@ export default function App() {
     } finally {
       setEditorBusy(false);
     }
-  }, [project, editorBusy, pushToast]);
+  }, [project, editorBusy, pushToast, updatePatchesByKey]);
 
   const handleMoveEditorSelection = useCallback((
     placement: 'before' | 'after',
@@ -2026,7 +2086,7 @@ export default function App() {
       if (!project.entries.some((entry) => !entry.isDirectory && entry.path === selection.sourceFile)) return;
       try {
         const patch = await applyEditorNudge(project, { selection, deltaX, deltaY });
-        setPatchesByKey((map) => {
+        updatePatchesByKey((map) => {
           const next = new Map(map);
           next.set(patch.id, patch);
           return next;
@@ -2061,7 +2121,7 @@ export default function App() {
     };
     editorNudgeQueueRef.current = editorNudgeQueueRef.current.then(applyNudge, applyNudge);
     void editorNudgeQueueRef.current;
-  }, [project, pushToast]);
+  }, [project, pushToast, updatePatchesByKey]);
 
   const handleDeleteEditorSelection = useCallback(async () => {
     if (!project || editorBusy || !editorSelection) return;
@@ -2070,7 +2130,7 @@ export default function App() {
     setEditorError(null);
     try {
       const patch = await applyEditorDelete(project, editorSelection);
-      setPatchesByKey((map) => {
+      updatePatchesByKey((map) => {
         const next = new Map(map);
         next.set(patch.id, patch);
         return next;
@@ -2098,7 +2158,7 @@ export default function App() {
     } finally {
       setEditorBusy(false);
     }
-  }, [project, editorBusy, editorSelection, pushToast]);
+  }, [project, editorBusy, editorSelection, pushToast, updatePatchesByKey]);
 
   // ------------------------------------------------------------------------
   // Bulk replace handlers
@@ -2173,7 +2233,7 @@ export default function App() {
         },
       });
       if (result.kind === 'done') {
-        setPatchesByKey((map) => {
+        updatePatchesByKey((map) => {
           const next = new Map(map);
           for (const p of result.patches) next.set(p.id, p);
           return next;
@@ -2206,7 +2266,7 @@ export default function App() {
       // is purely the UI's bookkeeping.
       setBusyPhase({ kind: 'idle' });
     }
-  }, [project, bulkPendingFile, scopedDetections, bulkBusy]);
+  }, [project, bulkPendingFile, scopedDetections, bulkBusy, updatePatchesByKey]);
 
   // ------------------------------------------------------------------------
   // Project reload / wipe
@@ -2235,7 +2295,7 @@ export default function App() {
     setCurrentPagePath('');
     setExpanded(new Set());
     setError(null);
-    setPatchesByKey(new Map());
+    replacePatchesByKey(new Map());
     setPendingFile(null);
     setReplacementError(null);
     setBrokenError(null);
@@ -2277,7 +2337,7 @@ export default function App() {
     // working without re-toggling.
     restoreMutatedZipArrayRef.current = null;
     void clearSession();
-  }, [releaseWorkerProject, updateProjectRecordIdentity]);
+  }, [releaseWorkerProject, updateProjectRecordIdentity, replacePatchesByKey]);
 
   // ------------------------------------------------------------------------
   // Persistence effects (debounced saveSession + on-boot loadSession)
@@ -2498,6 +2558,12 @@ export default function App() {
             elementId: typeof payload.elementId === 'string' ? payload.elementId : undefined,
             className: typeof payload.className === 'string' ? payload.className : undefined,
             style: typeof payload.style === 'string' ? payload.style : undefined,
+            role: typeof payload.role === 'string' ? payload.role : undefined,
+            ariaLabel: typeof payload.ariaLabel === 'string' ? payload.ariaLabel : undefined,
+            name: typeof payload.name === 'string' ? payload.name : undefined,
+            inputType: typeof payload.inputType === 'string' ? payload.inputType : undefined,
+            value: typeof payload.value === 'string' ? payload.value : undefined,
+            placeholder: typeof payload.placeholder === 'string' ? payload.placeholder : undefined,
             sourceStart: typeof payload.sourceStart === 'number' ? payload.sourceStart : undefined,
             sourceEnd: typeof payload.sourceEnd === 'number' ? payload.sourceEnd : undefined,
             hasElementChildren: typeof payload.hasElementChildren === 'boolean' ? payload.hasElementChildren : undefined,
@@ -2624,6 +2690,7 @@ export default function App() {
         progress={busyPhase}
         saveAtRisk={saveAtRisk}
         projectSaveBusy={projectSaveBusy}
+        projectMutationBusy={projectMutationBusy}
         theme={theme}
         onSaveProject={handleSaveProject}
         onSaveProjectAs={handleSaveProjectAs}
@@ -2717,7 +2784,7 @@ export default function App() {
             checkpointsLoading={checkpointsLoading}
             checkpointBusyId={checkpointBusyId}
             checkpointSaveBusy={checkpointSaveBusy}
-            canSaveCheckpoint={project !== null && !isLoading && !projectSaveBusy}
+            canSaveCheckpoint={project !== null && !isLoading && !projectSaveBusy && !projectMutationBusy}
             onSaveCheckpoint={handleSaveCheckpoint}
             onRestoreCheckpoint={handleRequestRestoreCheckpoint}
             onDeleteCheckpoint={handleDeleteCheckpoint}
@@ -2803,7 +2870,7 @@ export default function App() {
               exportState={exportState}
               exportSummary={exportSummary}
               exportError={exportError}
-              canExport={project !== null && !isLoading}
+              canExport={project !== null && !isLoading && !projectMutationBusy}
               onExport={() => void handleExport()}
               onExportAgain={handleExportAgain}
               fitStyleBusy={fitStyleBusy}
@@ -3270,6 +3337,12 @@ function readEditorSelection(value: unknown, sourceFileHint: unknown): EditorSel
     elementId: typeof value.elementId === 'string' ? value.elementId : undefined,
     className: typeof value.className === 'string' ? value.className : undefined,
     style: typeof value.style === 'string' ? value.style : undefined,
+    role: typeof value.role === 'string' ? value.role : undefined,
+    ariaLabel: typeof value.ariaLabel === 'string' ? value.ariaLabel : undefined,
+    name: typeof value.name === 'string' ? value.name : undefined,
+    inputType: typeof value.inputType === 'string' ? value.inputType : undefined,
+    value: typeof value.value === 'string' ? value.value : undefined,
+    placeholder: typeof value.placeholder === 'string' ? value.placeholder : undefined,
     sourceStart: typeof value.sourceStart === 'number' ? value.sourceStart : undefined,
     sourceEnd: typeof value.sourceEnd === 'number' ? value.sourceEnd : undefined,
     hasElementChildren: typeof value.hasElementChildren === 'boolean' ? value.hasElementChildren : undefined,
@@ -3299,10 +3372,24 @@ function editorFieldValue(selection: EditorSelection, field: EditableEditorField
       return selection.alt ?? '';
     case 'href':
       return selection.href ?? '';
+    case 'id':
+      return selection.elementId ?? '';
     case 'class':
       return selection.className ?? '';
     case 'style':
       return selection.style ?? '';
+    case 'role':
+      return selection.role ?? '';
+    case 'aria-label':
+      return selection.ariaLabel ?? '';
+    case 'name':
+      return selection.name ?? '';
+    case 'type':
+      return selection.inputType ?? '';
+    case 'value':
+      return selection.value ?? '';
+    case 'placeholder':
+      return selection.placeholder ?? '';
   }
 }
 
@@ -3323,10 +3410,24 @@ function updateEditorSelectionField(
         : selection;
     case 'href':
       return { ...selection, href: value };
+    case 'id':
+      return { ...selection, elementId: value, selectorHint: buildSelectorHint(selection.tagName, value, selection.className ?? '') };
     case 'class':
       return { ...selection, className: value, selectorHint: buildSelectorHint(selection.tagName, selection.elementId, value) };
     case 'style':
       return { ...selection, style: value };
+    case 'role':
+      return { ...selection, role: value };
+    case 'aria-label':
+      return { ...selection, ariaLabel: value, label: selection.label || value };
+    case 'name':
+      return { ...selection, name: value };
+    case 'type':
+      return { ...selection, inputType: value };
+    case 'value':
+      return { ...selection, value: value, label: selection.kind === 'element' && value ? value : selection.label };
+    case 'placeholder':
+      return { ...selection, placeholder: value, label: selection.kind === 'element' && !selection.label ? value : selection.label };
   }
 }
 
@@ -3338,10 +3439,24 @@ function editorFieldLabel(field: EditableEditorField): string {
       return 'alt text';
     case 'href':
       return 'link';
+    case 'id':
+      return 'element id';
     case 'class':
       return 'classes';
     case 'style':
       return 'inline style';
+    case 'role':
+      return 'role';
+    case 'aria-label':
+      return 'ARIA label';
+    case 'name':
+      return 'name';
+    case 'type':
+      return 'input type';
+    case 'value':
+      return 'value';
+    case 'placeholder':
+      return 'placeholder';
   }
 }
 
@@ -3414,6 +3529,7 @@ function TopBar({
   progress,
   saveAtRisk,
   projectSaveBusy,
+  projectMutationBusy,
   theme,
   onSaveProject,
   onSaveProjectAs,
@@ -3424,6 +3540,7 @@ function TopBar({
   progress: Phase;
   saveAtRisk: boolean;
   projectSaveBusy: boolean;
+  projectMutationBusy: boolean;
   theme: PersistedTheme;
   onSaveProject: () => void;
   onSaveProjectAs: () => void;
@@ -3431,7 +3548,10 @@ function TopBar({
   onCancelOnboarding: () => void;
 }) {
   const nextTheme = theme === 'dark' ? 'light' : 'dark';
-  const canSaveProject = project !== null && !projectSaveBusy;
+  const canSaveProject = project !== null && !projectSaveBusy && !projectMutationBusy;
+  const saveTitle = projectMutationBusy
+    ? 'Finish the current edit before saving'
+    : 'Save project to Projects';
 
   return (
     <header className="flex min-w-0 items-center justify-between gap-3 border-b border-zinc-800 bg-zinc-900/80 px-3 py-2 backdrop-blur sm:px-4">
@@ -3475,7 +3595,7 @@ function TopBar({
               onClick={onSaveProject}
               disabled={!canSaveProject}
               aria-busy={projectSaveBusy}
-              title="Save project to Projects"
+              title={saveTitle}
               className="shrink-0 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
               data-testid="save-project-button"
             >
@@ -3485,7 +3605,7 @@ function TopBar({
               type="button"
               onClick={onSaveProjectAs}
               disabled={!canSaveProject}
-              title="Save project as a new Projects record"
+              title={projectMutationBusy ? 'Finish the current edit before saving' : 'Save project as a new Projects record'}
               className="hidden shrink-0 rounded-md border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px] font-medium text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 sm:inline-flex"
               data-testid="save-project-as-button"
             >

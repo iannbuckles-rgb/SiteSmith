@@ -396,7 +396,7 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
   if (editorPatches.length > 0) {
     lines.push('## Direct editor edits', '');
     lines.push(
-      `${editorPatches.length} inline editor edit${editorPatches.length === 1 ? '' : 's'} applied from the live preview. These are targeted source edits against selected text, links, image attributes, classes, or inline styles.`,
+      `${editorPatches.length} inline editor edit${editorPatches.length === 1 ? '' : 's'} applied from the live preview. These are targeted source edits against selected text, links, image attributes, form values, component metadata, classes, or inline styles.`,
       '',
     );
     for (const p of editorPatches) {

@@ -164,7 +164,20 @@ export interface ImageDetection {
  * Editing / replacement
  * --------------------------------------------------------------------------*/
 
-export type EditorEditField = 'text' | 'src' | 'alt' | 'href' | 'class' | 'style';
+export type EditorEditField =
+  | 'text'
+  | 'src'
+  | 'alt'
+  | 'href'
+  | 'id'
+  | 'class'
+  | 'style'
+  | 'role'
+  | 'aria-label'
+  | 'name'
+  | 'type'
+  | 'value'
+  | 'placeholder';
 
 export interface EditorAppliedEdit {
   field: EditorEditField;
