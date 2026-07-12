@@ -118,4 +118,52 @@ describe('imageDetector', () => {
       detectImages(project.zip, project.entries, { signal: controller.signal }),
     ).rejects.toMatchObject({ name: 'AbortError' });
   });
+
+  it('detects lazy attrs, posters, inline styles, SVG image hrefs, and richer manifest resources', async () => {
+    const project = makeProject({
+      'index.html': [
+        '<img data-src="images/lazy.png" data-srcset="images/lazy-small.png 1x, images/lazy-large.png 2x">',
+        '<video poster="images/poster.jpg"></video>',
+        '<section style="background-image:url(\'images/inline-bg.webp\')"></section>',
+        '<input type="image" src="images/input-icon.svg">',
+        '<svg><image href="images/svg-photo.png"></image></svg>',
+        '<link rel="preload" as="image" href="images/preload.avif">',
+        '<meta name="twitter:image" content="images/social.jpg">',
+        '<img src="data:image/png;base64,abc">',
+      ].join(''),
+      'manifest.webmanifest': JSON.stringify({
+        icons: [{ src: 'images/app-icon.png', sizes: '192x192' }],
+        screenshots: [{ src: 'images/screenshot.png', sizes: '1280x720' }],
+        shortcuts: [{ name: 'Open', icons: [{ src: 'images/shortcut.png', sizes: '96x96' }] }],
+      }),
+      'images/lazy.png': new Uint8Array([1]),
+      'images/lazy-small.png': new Uint8Array([2]),
+      'images/lazy-large.png': new Uint8Array([3]),
+      'images/poster.jpg': new Uint8Array([4]),
+      'images/inline-bg.webp': new Uint8Array([5]),
+      'images/input-icon.svg': new Uint8Array([6]),
+      'images/svg-photo.png': new Uint8Array([7]),
+      'images/preload.avif': new Uint8Array([8]),
+      'images/social.jpg': new Uint8Array([9]),
+      'images/app-icon.png': new Uint8Array([10]),
+      'images/screenshot.png': new Uint8Array([11]),
+      'images/shortcut.png': new Uint8Array([12]),
+    });
+
+    const detections = await detectImages(project.zip, project.entries);
+    const byRaw = new Map(detections.map((detection) => [detection.rawUrl, detection]));
+
+    expect(byRaw.get('images/lazy.png')).toMatchObject({ sourceTag: 'img', sourceAttr: 'data-src', status: 'ok' });
+    expect(byRaw.get('images/lazy-large.png')).toMatchObject({ sourceTag: 'img', sourceAttr: 'data-srcset', status: 'ok' });
+    expect(byRaw.get('images/poster.jpg')).toMatchObject({ sourceTag: 'video', sourceAttr: 'poster', type: 'hero' });
+    expect(byRaw.get('images/inline-bg.webp')).toMatchObject({ sourceTag: 'section', sourceAttr: 'style', extra: { cssProperty: 'background-image' } });
+    expect(byRaw.get('images/input-icon.svg')).toMatchObject({ sourceTag: 'input', sourceAttr: 'src', type: 'icon' });
+    expect(byRaw.get('images/svg-photo.png')).toMatchObject({ sourceTag: 'image', sourceAttr: 'href' });
+    expect(byRaw.get('images/preload.avif')).toMatchObject({ sourceTag: 'link', sourceAttr: 'href', extra: { rel: 'preload' } });
+    expect(byRaw.get('images/social.jpg')).toMatchObject({ sourceTag: 'meta', sourceAttr: 'content', type: 'social' });
+    expect(byRaw.get('images/app-icon.png')).toMatchObject({ sourceKind: 'manifest', sourceTag: 'icon', extra: { manifestPath: 'icons.0.src' } });
+    expect(byRaw.get('images/screenshot.png')).toMatchObject({ sourceKind: 'manifest', sourceTag: 'screenshot', extra: { manifestPath: 'screenshots.0.src' } });
+    expect(byRaw.get('images/shortcut.png')).toMatchObject({ sourceKind: 'manifest', sourceTag: 'shortcut-icon', extra: { manifestPath: 'shortcuts.0.icons.0.src' } });
+    expect(detections.some((detection) => detection.rawUrl.startsWith('data:'))).toBe(false);
+  });
 });

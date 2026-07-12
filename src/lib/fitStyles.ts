@@ -73,7 +73,7 @@ export function canApplyFitStyle(detection: ImageDetection): boolean {
     // at apply time. Keeping `canApplyFitStyle` and `applyFitStyleToImg`
     // in lockstep means the UI never offers a button that the rewriter
     // can't honour.
-    return true;
+    return detection.sourceAttr.toLowerCase() === 'src';
   }
   if (detection.sourceKind === 'css' && tag === 'url') {
     return true;

@@ -151,6 +151,7 @@ export interface ImageDetection {
     rel?: string;
     sizes?: string;
     cssProperty?: string;
+    manifestPath?: string;
   };
   /**
    * Only present when status === 'remote'. Drives the Broken Images filter

@@ -422,7 +422,7 @@ export default function App() {
   const activeDetections = useMemo<ImageDetection[]>(() => {
     if (patchesByKey.size === 0) return detections;
     return detections.filter((d) => {
-      const id = `${d.sourceFile}::${d.sourceTag}::${d.sourceAttr}::${d.rawUrl}`;
+      const id = detectionKey(d);
       if (patchesByKey.has(id)) return false;
       for (const k of patchesByKey.keys()) {
         if (k.startsWith(id + '#')) return false;
@@ -454,19 +454,19 @@ export default function App() {
 
   const selectedDetection: ImageDetection | null = useMemo(() => {
     if (!selectedDetectionKey) return null;
-    return activeDetections.find((d) => `${d.sourceFile}|${d.rawUrl}` === selectedDetectionKey) ?? null;
+    return activeDetections.find((d) => selectionMatchesDetection(d, selectedDetectionKey)) ?? null;
   }, [activeDetections, selectedDetectionKey]);
 
   const selectedAppliedPatch: AppliedPatch | null = useMemo(() => {
     if (!selectedDetectionKey) return null;
-    const sep = selectedDetectionKey.indexOf('|');
-    if (sep === -1) return null;
-    const sourceFile = selectedDetectionKey.slice(0, sep);
-    const rawUrl = selectedDetectionKey.slice(sep + 1);
+    const direct = patchesByKey.get(selectedDetectionKey);
+    if (direct && direct.action !== 'manual-replace' && direct.action !== 'editor-edit' && direct.action !== 'editor-reorder' && direct.action !== 'editor-nudge' && direct.action !== 'editor-delete') {
+      return direct;
+    }
     let best: AppliedPatch | null = null;
     for (const p of patchesByKey.values()) {
       if (p.action === 'manual-replace' || p.action === 'editor-edit' || p.action === 'editor-reorder' || p.action === 'editor-nudge' || p.action === 'editor-delete') continue;
-      if (p.sourceFile !== sourceFile || p.rawUrl !== rawUrl) continue;
+      if (!selectionMatchesPatch(p, selectedDetectionKey)) continue;
       if (!best || p.appliedAt > best.appliedAt) best = p;
     }
     return best;
@@ -2129,7 +2129,7 @@ export default function App() {
       fileName: bulkPendingFile.name,
       detectionCount: scopedDetections.length,
       preview: scopedDetections.slice(0, 8).map((d) => ({
-        key: `${d.sourceFile}|${d.rawUrl}`,
+        key: detectionKey(d),
         rawUrl: d.rawUrl,
         sourceFile: d.sourceFile,
       })),
@@ -3351,6 +3351,34 @@ function buildSelectorHint(tagName: string, id: string | undefined, className: s
   const classes = className.trim().split(/\s+/).filter(Boolean).slice(0, 3);
   if (classes.length > 0) out += `.${classes.join('.')}`;
   return out;
+}
+
+type DetectionKeyLike = {
+  sourceFile: string;
+  sourceTag: string;
+  sourceAttr: string;
+  rawUrl: string;
+};
+
+function detectionKey(detection: DetectionKeyLike): string {
+  return `${detection.sourceFile}::${detection.sourceTag}::${detection.sourceAttr}::${detection.rawUrl}`;
+}
+
+function legacyDetectionKey(detection: Pick<DetectionKeyLike, 'sourceFile' | 'rawUrl'>): string {
+  return `${detection.sourceFile}|${detection.rawUrl}`;
+}
+
+function selectionMatchesDetection(detection: ImageDetection, selectedKey: string): boolean {
+  return selectedKey === detectionKey(detection) || selectedKey === legacyDetectionKey(detection);
+}
+
+function selectionMatchesPatch(patch: AppliedPatch, selectedKey: string): boolean {
+  return (
+    patch.id === selectedKey
+    || patch.id.startsWith(`${selectedKey}#`)
+    || selectedKey === detectionKey(patch as DetectionKeyLike)
+    || selectedKey === legacyDetectionKey(patch as DetectionKeyLike)
+  );
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {

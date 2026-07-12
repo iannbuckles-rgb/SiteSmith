@@ -8,6 +8,31 @@ import { sanitizeFilename, uniqueAssetPath } from './filenameSanitizer';
 import { pathRelative } from './pathRelative';
 import { findCssCommentRanges, findHtmlCommentRanges, isOffsetInRanges } from './sourceRanges';
 
+const HTML_IMAGE_URL_ATTRS = new Set([
+  'src',
+  'data-src',
+  'data-original',
+  'data-lazy-src',
+  'data-lazy',
+  'data-bg',
+  'data-background',
+  'data-image',
+  'data-image-src',
+  'data-full',
+  'data-large',
+  'poster',
+  'href',
+  'xlink:href',
+  'content',
+  'style',
+]);
+
+const HTML_SRCSET_ATTRS = new Set([
+  'srcset',
+  'data-srcset',
+  'data-lazy-srcset',
+]);
+
 export interface ReplacementPayload {
   bytes: Uint8Array;
   filename: string;
@@ -22,13 +47,14 @@ export type ReplacementPatch = Extract<AppliedPatch, { action: 'replace' }>;
 /**
  * Whether the replacement pipeline can handle a given detection. Mirrors
  * the explicit scope of this step:
- *   - HTML `<img src>`.
- *   - HTML `<link rel="...icon..." href>` for favicons / touch icons.
- *   - No `<input type=image>`, no `srcset`, no manifest icons.
+ *   - HTML image-bearing attributes (`src`, lazy data attrs, `poster`,
+ *     social meta/link URLs, SVG `<image href>`, and `srcset` candidates).
+ *   - HTML inline `style` URL tokens.
+ *   - Manifest image resources with an exact JSON path.
  *   - CSS `url(...)` only.
  */
 export function canReplace(detection: ImageDetection): boolean {
-  return isHtmlImgSrc(detection) || isHtmlIconLinkHref(detection) || isCssUrl(detection);
+  return isHtmlReplaceableRef(detection) || isManifestReplaceableRef(detection) || isCssUrl(detection);
 }
 
 /**
@@ -59,12 +85,27 @@ function isHtmlImgSrc(detection: ImageDetection): boolean {
   );
 }
 
-function isHtmlIconLinkHref(detection: ImageDetection): boolean {
+function isHtmlReplaceableRef(detection: ImageDetection): boolean {
+  if (detection.sourceKind !== 'html') return false;
+  const tag = detection.sourceTag.toLowerCase();
+  const attr = detection.sourceAttr.toLowerCase();
+  if (HTML_SRCSET_ATTRS.has(attr)) return tag === 'img' || tag === 'source';
+  if (attr === 'style') return true;
+  if (tag === 'img') return HTML_IMAGE_URL_ATTRS.has(attr);
+  if (tag === 'source') return attr === 'src';
+  if (tag === 'video') return attr === 'poster';
+  if (tag === 'input') return attr === 'src';
+  if (tag === 'image' || tag === 'feimage') return attr === 'href' || attr === 'xlink:href';
+  if (tag === 'link') return attr === 'href' && isImageLinkRel(detection.extra?.rel);
+  if (tag === 'meta') return attr === 'content' && isImageMetaProperty(detection.extra?.property);
+  return false;
+}
+
+function isManifestReplaceableRef(detection: ImageDetection): boolean {
   return (
-    detection.sourceKind === 'html'
-    && detection.sourceTag.toLowerCase() === 'link'
-    && detection.sourceAttr.toLowerCase() === 'href'
-    && /icon/.test(detection.extra?.rel?.toLowerCase() ?? '')
+    detection.sourceKind === 'manifest'
+    && typeof detection.extra?.manifestPath === 'string'
+    && detection.extra.manifestPath.length > 0
   );
 }
 
@@ -73,6 +114,24 @@ function isCssUrl(detection: ImageDetection): boolean {
     detection.sourceKind === 'css'
     && detection.sourceTag.toLowerCase() === 'url'
     && detection.sourceAttr.toLowerCase() === 'url'
+  );
+}
+
+function isImageLinkRel(rel: string | undefined): boolean {
+  const value = (rel ?? '').toLowerCase();
+  if (!value) return false;
+  if (/(^|\s)(?:icon|apple-touch-icon|apple-touch-icon-precomposed|mask-icon|image_src)(\s|$)/.test(value)) return true;
+  return /(^|\s)preload(\s|$)/.test(value);
+}
+
+function isImageMetaProperty(property: string | undefined): boolean {
+  const value = (property ?? '').toLowerCase();
+  return (
+    value === 'og:image'
+    || value === 'og:image:url'
+    || value === 'og:image:secure_url'
+    || value === 'twitter:image'
+    || value === 'twitter:image:src'
   );
 }
 
@@ -179,7 +238,9 @@ export async function applyReplacement(
 
   const patched = detection.sourceKind === 'css'
     ? patchCss(sourceText, searchValue, newRelativeRef)
-    : patchHtml(sourceText, detection, searchValue, newRelativeRef);
+    : detection.sourceKind === 'manifest'
+      ? patchManifest(sourceText, detection, searchValue, newRelativeRef)
+      : patchHtml(sourceText, detection, searchValue, newRelativeRef);
 
   if (patched === sourceText) {
     // The diagnostic branches on what we actually searched for, not on
@@ -356,7 +417,7 @@ function patchId(detection: ImageDetection): string {
  * -------------------------------------------------------------------------*/
 
 const ATTR_RE = /\b([a-zA-Z][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
-const CSS_URL_RE = /url\(\s*(['"]?)([^)'"\s]*?)\1\s*\)/g;
+const CSS_URL_RE = /url\(\s*(['"]?)([^)'"]*?)\1\s*\)/g;
 
 function patchHtml(
   html: string,
@@ -368,9 +429,18 @@ function patchHtml(
   const replaceAttr: Repl = (m, an, q1, q2, q3) => {
     const value = q1 ?? q2 ?? q3 ?? '';
     if (an.toLowerCase() !== detection.sourceAttr.toLowerCase()) return m;
-    if (value !== searchValue) return m;
+    const decodedValue = decodeValue(value);
+    let nextValue: string | null = null;
+    if (HTML_SRCSET_ATTRS.has(detection.sourceAttr.toLowerCase())) {
+      nextValue = replaceSrcsetCandidate(value, searchValue, newRef);
+    } else if (detection.sourceAttr.toLowerCase() === 'style') {
+      nextValue = patchCss(value, searchValue, newRef);
+    } else if (decodedValue === searchValue || value === searchValue) {
+      nextValue = newRef;
+    }
+    if (nextValue == null || nextValue === value) return m;
     const quote = q1 != null ? '"' : q2 != null ? "'" : '';
-    return `${an}=${quote}${newRef}${quote}`;
+    return `${an}=${quote}${escapeForAttribute(nextValue)}${quote}`;
   };
   const comments = findHtmlCommentRanges(html);
   return replaceHtmlTags(html, comments, ({ full, tagName, attrs }) => {
@@ -387,20 +457,108 @@ function htmlTagMatchesDetection(
 ): boolean {
   const expectedTag = detection.sourceTag.toLowerCase();
   if (tagName.toLowerCase() !== expectedTag) return false;
-  if (expectedTag !== 'link' || detection.sourceAttr.toLowerCase() !== 'href') return true;
+  const sourceAttr = detection.sourceAttr.toLowerCase();
 
-  const rel = extractAttr(attrs, 'rel')?.toLowerCase() ?? '';
-  const expectedRel = detection.extra?.rel?.toLowerCase() ?? '';
-  return expectedRel ? rel === expectedRel : /icon/.test(rel);
+  if (expectedTag === 'link' && sourceAttr === 'href') {
+    const rel = extractAttr(attrs, 'rel')?.toLowerCase() ?? '';
+    const expectedRel = detection.extra?.rel?.toLowerCase() ?? '';
+    return expectedRel ? rel === expectedRel : isImageLinkRel(rel);
+  }
+  if (expectedTag === 'meta' && sourceAttr === 'content') {
+    const property = (
+      extractAttr(attrs, 'property')
+      ?? extractAttr(attrs, 'name')
+      ?? ''
+    ).toLowerCase();
+    const expectedProperty = detection.extra?.property?.toLowerCase() ?? '';
+    return expectedProperty ? property === expectedProperty : isImageMetaProperty(property);
+  }
+  if (expectedTag === 'input' && sourceAttr === 'src') {
+    return (extractAttr(attrs, 'type') ?? '').toLowerCase() === 'image';
+  }
+
+  return true;
 }
 
 function patchCss(css: string, searchValue: string, newRef: string): string {
   const comments = findCssCommentRanges(css);
   return css.replace(CSS_URL_RE, (match: string, q: string, ref: string, offset: number) => {
     if (isOffsetInRanges(offset, comments)) return match;
-    if (ref !== searchValue) return match;
+    if (decodeValue(ref) !== searchValue && ref !== searchValue) return match;
     return `url(${q}${newRef}${q})`;
   });
+}
+
+function patchManifest(
+  sourceText: string,
+  detection: ImageDetection,
+  searchValue: string,
+  newRef: string,
+): string {
+  const manifestPath = detection.extra?.manifestPath;
+  if (!manifestPath) return sourceText;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(sourceText);
+  } catch {
+    return sourceText;
+  }
+  if (!parsed || typeof parsed !== 'object') return sourceText;
+  const changed = setManifestValueAtPath(parsed as Record<string, unknown>, manifestPath, searchValue, newRef);
+  if (!changed) return sourceText;
+  const newline = sourceText.endsWith('\n') ? '\n' : '';
+  return JSON.stringify(parsed, null, 2) + newline;
+}
+
+function replaceSrcsetCandidate(srcset: string, searchValue: string, newRef: string): string | null {
+  let changed = false;
+  const next = srcset.split(',').map((part) => {
+    const leading = part.match(/^\s*/)?.[0] ?? '';
+    const trailing = part.match(/\s*$/)?.[0] ?? '';
+    const body = part.trim();
+    if (!body) return part;
+    const match = body.match(/^(\S+)([\s\S]*)$/);
+    if (!match) return part;
+    const url = decodeValue(match[1]);
+    if (url !== searchValue && match[1] !== searchValue) return part;
+    changed = true;
+    return `${leading}${newRef}${match[2]}${trailing}`;
+  }).join(',');
+  return changed ? next : null;
+}
+
+function setManifestValueAtPath(
+  root: Record<string, unknown>,
+  path: string,
+  searchValue: string,
+  newRef: string,
+): boolean {
+  const parts = path.split('.');
+  let cursor: unknown = root;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    if (cursor == null) return false;
+    const part = parts[i];
+    if (/^\d+$/.test(part)) {
+      if (!Array.isArray(cursor)) return false;
+      cursor = cursor[Number(part)];
+    } else {
+      if (typeof cursor !== 'object') return false;
+      cursor = (cursor as Record<string, unknown>)[part];
+    }
+  }
+  if (cursor == null || typeof cursor !== 'object') return false;
+  const leaf = parts[parts.length - 1];
+  const current = Array.isArray(cursor)
+    ? cursor[Number(leaf)]
+    : (cursor as Record<string, unknown>)[leaf];
+  if (current !== searchValue) return false;
+  if (Array.isArray(cursor)) {
+    cursor[Number(leaf)] = newRef;
+  } else {
+    (cursor as Record<string, unknown>)[leaf] = newRef;
+  }
+  return true;
 }
 
 /* ---------------------------------------------------------------------------

@@ -186,6 +186,134 @@ describe('assetReplacer applyReplacement', () => {
     expect(css).toContain('.hero{background:url("../assets/mockups/hero-replacement.webp")}');
     await expectUndoRestores(project, patch, 'styles/site.css', source);
   });
+
+  it('rewrites one srcset candidate while preserving descriptors and siblings', async () => {
+    const source = '<img src="images/fallback.png" srcset="images/small.png 1x, images/large.png 2x">';
+    const project = makeProject({
+      'index.html': source,
+      'images/small.png': new Uint8Array([1]),
+      'images/large.png': new Uint8Array([2]),
+      'images/fallback.png': new Uint8Array([3]),
+    });
+    const detection = htmlImgDetection({
+      rawUrl: 'images/large.png',
+      resolvedPath: 'images/large.png',
+      sourceAttr: 'srcset',
+    });
+
+    expect(canReplace(detection)).toBe(true);
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([9]),
+      filename: 'Large Replacement.png',
+    });
+
+    const html = await zipText(project, 'index.html');
+    expect(html).toContain('src="images/fallback.png"');
+    expect(html).toContain('srcset="images/small.png 1x, ./assets/mockups/large-replacement.png 2x"');
+    await expectUndoRestores(project, patch, 'index.html', source);
+  });
+
+  it('rewrites inline style image URLs without touching another tag with the same URL', async () => {
+    const source = [
+      '<section style="background-image:url(\'images/hero.png\');color:white"></section>',
+      '<div style="background-image:url(\'images/hero.png\')"></div>',
+    ].join('');
+    const project = makeProject({
+      'index.html': source,
+      'images/hero.png': new Uint8Array([0]),
+    });
+    const detection: ImageDetection = {
+      rawUrl: 'images/hero.png',
+      resolvedPath: 'images/hero.png',
+      type: 'background',
+      status: 'ok',
+      sourceKind: 'html',
+      sourceFile: 'index.html',
+      sourceTag: 'section',
+      sourceAttr: 'style',
+      extra: { cssProperty: 'background-image' },
+    };
+
+    expect(canReplace(detection)).toBe(true);
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([5]),
+      filename: 'Inline Hero.webp',
+    });
+
+    const html = await zipText(project, 'index.html');
+    expect(html).toContain('<section style="background-image:url(\'./assets/mockups/inline-hero.webp\');color:white"></section>');
+    expect(html).toContain('<div style="background-image:url(\'images/hero.png\')"></div>');
+    await expectUndoRestores(project, patch, 'index.html', source);
+  });
+
+  it('rewrites social meta content without touching non-image meta content', async () => {
+    const source = [
+      '<meta property="og:image" content="images/social.png">',
+      '<meta name="description" content="images/social.png">',
+    ].join('');
+    const project = makeProject({
+      'index.html': source,
+      'images/social.png': new Uint8Array([0]),
+    });
+    const detection: ImageDetection = {
+      rawUrl: 'images/social.png',
+      resolvedPath: 'images/social.png',
+      type: 'social',
+      status: 'ok',
+      sourceKind: 'html',
+      sourceFile: 'index.html',
+      sourceTag: 'meta',
+      sourceAttr: 'content',
+      extra: { property: 'og:image' },
+    };
+
+    expect(canReplace(detection)).toBe(true);
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([8]),
+      filename: 'Social Card.png',
+    });
+
+    const html = await zipText(project, 'index.html');
+    expect(html).toContain('<meta property="og:image" content="./assets/mockups/social-card.png">');
+    expect(html).toContain('<meta name="description" content="images/social.png">');
+    await expectUndoRestores(project, patch, 'index.html', source);
+  });
+
+  it('rewrites the selected manifest image path only', async () => {
+    const manifest = JSON.stringify({
+      icons: [{ src: 'images/shared.png', sizes: '192x192' }],
+      screenshots: [{ src: 'images/shared.png', sizes: '1280x720' }],
+    });
+    const project = makeProject({
+      'manifest.webmanifest': manifest,
+      'images/shared.png': new Uint8Array([0]),
+    });
+    const detection: ImageDetection = {
+      rawUrl: 'images/shared.png',
+      resolvedPath: 'images/shared.png',
+      type: 'hero',
+      status: 'ok',
+      sourceKind: 'manifest',
+      sourceFile: 'manifest.webmanifest',
+      sourceTag: 'screenshot',
+      sourceAttr: 'src',
+      extra: { manifestPath: 'screenshots.0.src', sizes: '1280x720' },
+    };
+
+    expect(canReplace(detection)).toBe(true);
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([4]),
+      filename: 'Screenshot Replacement.png',
+    });
+
+    const next = JSON.parse(await zipText(project, 'manifest.webmanifest')) as {
+      icons: Array<{ src: string }>;
+      screenshots: Array<{ src: string }>;
+    };
+    expect(next.icons[0].src).toBe('images/shared.png');
+    expect(next.screenshots[0].src).toBe('./assets/mockups/screenshot-replacement.png');
+    await expectUndoRestores(project, patch, 'manifest.webmanifest', manifest);
+  });
 });
 
 describe('assetReplacer destructive flows', () => {

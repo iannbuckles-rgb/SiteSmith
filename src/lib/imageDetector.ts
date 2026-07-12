@@ -22,6 +22,28 @@ const NON_IMAGE_EXT = /\.(woff2?|ttf|eot|otf|pdf|mp4|webm|ogg|mp3|wav|json|xml|w
 /** Concurrency for reading file text from JSZip. Keeps memory bounded. */
 const READ_CONCURRENCY = 12;
 
+const HTML_IMAGE_ATTRS = [
+  'src',
+  'data-src',
+  'data-original',
+  'data-lazy-src',
+  'data-lazy',
+  'data-bg',
+  'data-background',
+  'data-image',
+  'data-image-src',
+  'data-full',
+  'data-large',
+] as const;
+
+const HTML_SRCSET_ATTRS = [
+  'srcset',
+  'data-srcset',
+  'data-lazy-srcset',
+] as const;
+
+const LINK_IMAGE_RELS = /(^|\s)(?:icon|shortcut icon|apple-touch-icon|apple-touch-icon-precomposed|mask-icon|image_src|preload)(\s|$)/i;
+
 /**
  * Run the full image-reference scan over an uploaded project and return a
  * sorted list of detections. Read failures (corrupt zip, unreadable binary
@@ -126,6 +148,7 @@ interface TypeHints {
   tagName?: string;
   cssProperty?: string;
   fromManifest?: boolean;
+  attrName?: string;
   rel?: string;
 }
 
@@ -136,12 +159,14 @@ interface TypeHints {
 function guessImageType(rawUrl: string, hints: TypeHints = {}): ImageType {
   if (hints.rel && /icon/i.test(hints.rel)) return 'favicon';
   if (hints.fromManifest) return 'favicon';
+  if (hints.attrName === 'poster') return 'hero';
   if (hints.cssProperty) {
     const p = hints.cssProperty.toLowerCase();
     if (/(background|bg)/.test(p)) return 'background';
     if (/(mask|cursor|list-style)/.test(p)) return 'icon';
   }
   if (hints.tagName === 'source' || hints.tagName === 'picture') return 'hero';
+  if (hints.tagName === 'input') return 'icon';
 
   const fname = (rawUrl.split('/').pop() || '').toLowerCase().split('?')[0].split('#')[0];
   if (/hero|banner/.test(fname)) return 'hero';
@@ -163,78 +188,77 @@ function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'statu
     seen.add(key);
     out.push(d);
   };
+  const pushAttr = (
+    element: Element,
+    attrName: string,
+    rawUrl: string | null,
+    typeOverride?: ImageType,
+    extra?: Omit<NonNullable<ImageDetection['extra']>, 'cssProperty'>,
+  ) => {
+    if (!rawUrl || !shouldKeepImageRef(rawUrl)) return;
+    const tagName = element.tagName.toLowerCase();
+    push({
+      rawUrl,
+      resolvedPath: '',
+      type: typeOverride ?? guessImageType(rawUrl, { tagName, attrName }),
+      sourceKind: 'html',
+      sourceFile,
+      sourceTag: tagName,
+      sourceAttr: attrName,
+      extra,
+    });
+  };
+  const pushSrcset = (element: Element, attrName: string, srcset: string | null) => {
+    if (!srcset) return;
+    const tagName = element.tagName.toLowerCase();
+    for (const candidate of parseSrcset(srcset)) {
+      if (!candidate || !shouldKeepImageRef(candidate)) continue;
+      push({
+        rawUrl: candidate,
+        resolvedPath: '',
+        type: guessImageType(candidate, { tagName, attrName }),
+        sourceKind: 'html',
+        sourceFile,
+        sourceTag: tagName,
+        sourceAttr: attrName,
+      });
+    }
+  };
 
   for (const img of Array.from(doc.querySelectorAll('img'))) {
     if (isIgnoredHtmlContext(img)) continue;
 
-    const src = img.getAttribute('src');
-    if (src) {
-      push({
-        rawUrl: src,
-        resolvedPath: '',
-        type: guessImageType(src, { tagName: 'img' }),
-        sourceKind: 'html',
-        sourceFile,
-        sourceTag: 'img',
-        sourceAttr: 'src',
-      });
-    }
-
-    const srcset = img.getAttribute('srcset');
-    if (srcset) {
-      for (const candidate of parseSrcset(srcset)) {
-        if (!candidate) continue;
-        if (classifyUrl(candidate) === 'remote' && !looksLikeImage(candidate)) continue;
-        push({
-          rawUrl: candidate,
-          resolvedPath: '',
-          type: guessImageType(candidate, { tagName: 'img' }),
-          sourceKind: 'html',
-          sourceFile,
-          sourceTag: 'img',
-          sourceAttr: 'srcset',
-        });
-      }
-    }
+    for (const attr of HTML_IMAGE_ATTRS) pushAttr(img, attr, img.getAttribute(attr));
+    for (const attr of HTML_SRCSET_ATTRS) pushSrcset(img, attr, img.getAttribute(attr));
   }
 
   for (const source of Array.from(doc.querySelectorAll('source'))) {
     if (isIgnoredHtmlContext(source)) continue;
 
-    const srcset = source.getAttribute('srcset');
-    if (!srcset) continue;
-    for (const candidate of parseSrcset(srcset)) {
-      if (!candidate) continue;
-      if (classifyUrl(candidate) === 'remote' && !looksLikeImage(candidate)) continue;
-      push({
-        rawUrl: candidate,
-        resolvedPath: '',
-        type: guessImageType(candidate, { tagName: 'source' }),
-        sourceKind: 'html',
-        sourceFile,
-        sourceTag: 'source',
-        sourceAttr: 'srcset',
-      });
-    }
+    const src = source.getAttribute('src');
+    if (source.closest('picture') || (src && looksLikeImage(src))) pushAttr(source, 'src', src);
+    for (const attr of HTML_SRCSET_ATTRS) pushSrcset(source, attr, source.getAttribute(attr));
   }
 
   for (const link of Array.from(doc.querySelectorAll('link'))) {
     if (isIgnoredHtmlContext(link)) continue;
 
     const rel = (link.getAttribute('rel') || '').toLowerCase();
+    const as = (link.getAttribute('as') || '').toLowerCase();
     const href = link.getAttribute('href');
-    if (href && /icon/.test(rel)) {
-      push({
-        rawUrl: href,
-        resolvedPath: '',
-        type: guessImageType(href, { rel }),
-        sourceKind: 'html',
-        sourceFile,
-        sourceTag: 'link',
-        sourceAttr: 'href',
-        extra: { rel, sizes: link.getAttribute('sizes') ?? undefined },
-      });
-    }
+    const isPreloadedImage = /\bpreload\b/.test(rel) && as === 'image';
+    if (!href || (!LINK_IMAGE_RELS.test(rel) && !isPreloadedImage)) continue;
+    if (!shouldKeepImageRef(href)) continue;
+    push({
+      rawUrl: href,
+      resolvedPath: '',
+      type: guessImageType(href, { rel }),
+      sourceKind: 'html',
+      sourceFile,
+      sourceTag: 'link',
+      sourceAttr: 'href',
+      extra: { rel, sizes: link.getAttribute('sizes') ?? undefined },
+    });
   }
 
   for (const meta of Array.from(doc.querySelectorAll('meta'))) {
@@ -250,6 +274,7 @@ function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'statu
     const isTwitter =
       property === 'twitter:image' || property === 'twitter:image:src';
     if (isOg || isTwitter) {
+      if (!shouldKeepImageRef(content)) continue;
       push({
         rawUrl: content,
         resolvedPath: '',
@@ -259,6 +284,43 @@ function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'statu
         sourceTag: 'meta',
         sourceAttr: 'content',
         extra: { property },
+      });
+    }
+  }
+
+  for (const video of Array.from(doc.querySelectorAll('video'))) {
+    if (isIgnoredHtmlContext(video)) continue;
+    pushAttr(video, 'poster', video.getAttribute('poster'), 'hero');
+  }
+
+  for (const input of Array.from(doc.querySelectorAll('input'))) {
+    if (isIgnoredHtmlContext(input)) continue;
+    if ((input.getAttribute('type') || '').toLowerCase() !== 'image') continue;
+    pushAttr(input, 'src', input.getAttribute('src'), 'icon');
+  }
+
+  for (const image of Array.from(doc.querySelectorAll('image,feimage'))) {
+    if (isIgnoredHtmlContext(image)) continue;
+    pushAttr(image, 'href', image.getAttribute('href'));
+    pushAttr(image, 'xlink:href', image.getAttribute('xlink:href'));
+  }
+
+  for (const element of Array.from(doc.querySelectorAll('[style]'))) {
+    if (isIgnoredHtmlContext(element)) continue;
+    const style = element.getAttribute('style');
+    if (!style) continue;
+    const tagName = element.tagName.toLowerCase();
+    for (const detection of scanCss(style, sourceFile)) {
+      push({
+        ...detection,
+        type: guessImageType(detection.rawUrl, {
+          tagName,
+          attrName: 'style',
+          cssProperty: detection.extra?.cssProperty,
+        }),
+        sourceKind: 'html',
+        sourceTag: tagName,
+        sourceAttr: 'style',
       });
     }
   }
@@ -281,12 +343,10 @@ function scanCss(css: string, sourceFile: string): Omit<ImageDetection, 'status'
   let m: RegExpExecArray | null;
   while ((m = urlRe.exec(text)) !== null) {
     const ref = m[2].trim();
-    if (!ref) continue;
-    if (/^(data):/i.test(ref)) continue; // data URIs aren't file-based images
+    if (!shouldKeepImageRef(ref)) continue;
 
     const cssProperty = nearestCssProperty(text, m.index);
-    const isRemote = classifyUrl(ref) === 'remote';
-    if (!isRemote && NON_IMAGE_EXT.test(ref)) continue; // skip fonts/etc
+    if (cssProperty === 'src' && !looksLikeImage(ref)) continue;
 
     push(
       {
@@ -317,37 +377,75 @@ function scanManifest(
     return [];
   }
   if (!manifest || typeof manifest !== 'object') return [];
-  const m = manifest as { icons?: unknown; icon?: unknown };
+  const m = manifest as {
+    icons?: unknown;
+    icon?: unknown;
+    screenshots?: unknown;
+    shortcuts?: unknown;
+  };
   const out: Omit<ImageDetection, 'status'>[] = [];
+  const push = (
+    rawUrl: string,
+    sourceTag: string,
+    sourceAttr: string,
+    manifestPath: string,
+    sizes?: unknown,
+  ) => {
+    if (!shouldKeepImageRef(rawUrl)) return;
+    out.push({
+      rawUrl,
+      resolvedPath: '',
+      type: sourceTag === 'screenshot'
+        ? 'hero'
+        : guessImageType(rawUrl, { fromManifest: true }),
+      sourceKind: 'manifest',
+      sourceFile,
+      sourceTag,
+      sourceAttr,
+      extra: {
+        sizes: typeof sizes === 'string' ? sizes : undefined,
+        manifestPath,
+      },
+    });
+  };
 
   if (Array.isArray(m.icons)) {
-    for (const icon of m.icons) {
+    for (const [index, icon] of m.icons.entries()) {
       if (icon && typeof icon === 'object' && 'src' in icon &&
           typeof (icon as { src: unknown }).src === 'string') {
-        const sizes = (icon as { sizes?: unknown }).sizes;
-        out.push({
-          rawUrl: (icon as { src: string }).src,
-          resolvedPath: '',
-          type: guessImageType((icon as { src: string }).src, { fromManifest: true }),
-          sourceKind: 'manifest',
-          sourceFile,
-          sourceTag: 'icon',
-          sourceAttr: 'src',
-          extra: { sizes: typeof sizes === 'string' ? sizes : undefined },
-        });
+        push((icon as { src: string }).src, 'icon', 'src', `icons.${index}.src`, (icon as { sizes?: unknown }).sizes);
       }
     }
   }
   if (typeof m.icon === 'string') {
-    out.push({
-      rawUrl: m.icon,
-      resolvedPath: '',
-      type: guessImageType(m.icon, { fromManifest: true }),
-      sourceKind: 'manifest',
-      sourceFile,
-      sourceTag: 'icon',
-      sourceAttr: 'icon',
-    });
+    push(m.icon, 'icon', 'icon', 'icon');
+  }
+  if (Array.isArray(m.screenshots)) {
+    for (const [index, screenshot] of m.screenshots.entries()) {
+      if (screenshot && typeof screenshot === 'object' && 'src' in screenshot &&
+          typeof (screenshot as { src: unknown }).src === 'string') {
+        push((screenshot as { src: string }).src, 'screenshot', 'src', `screenshots.${index}.src`, (screenshot as { sizes?: unknown }).sizes);
+      }
+    }
+  }
+  if (Array.isArray(m.shortcuts)) {
+    for (const [shortcutIndex, shortcut] of m.shortcuts.entries()) {
+      if (!shortcut || typeof shortcut !== 'object') continue;
+      const icons = (shortcut as { icons?: unknown }).icons;
+      if (!Array.isArray(icons)) continue;
+      for (const [iconIndex, icon] of icons.entries()) {
+        if (icon && typeof icon === 'object' && 'src' in icon &&
+            typeof (icon as { src: unknown }).src === 'string') {
+          push(
+            (icon as { src: string }).src,
+            'shortcut-icon',
+            'src',
+            `shortcuts.${shortcutIndex}.icons.${iconIndex}.src`,
+            (icon as { sizes?: unknown }).sizes,
+          );
+        }
+      }
+    }
   }
   return out;
 }
@@ -360,6 +458,17 @@ function looksLikeImage(rawUrl: string): boolean {
   // Strip query/fragment for the extension check.
   const path = rawUrl.split('?')[0].split('#')[0];
   return IMAGE_EXT.test(path);
+}
+
+function shouldKeepImageRef(rawUrl: string): boolean {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return false;
+  if (/^(data|mailto|tel|javascript):/i.test(trimmed)) return false;
+  if (/^#/.test(trimmed)) return false;
+  if (NON_IMAGE_EXT.test(trimmed)) return false;
+  const kind = classifyUrl(trimmed);
+  if (kind === 'remote' && /^(data|mailto|tel|javascript):/i.test(trimmed)) return false;
+  return true;
 }
 
 function isIgnoredHtmlContext(element: Element): boolean {

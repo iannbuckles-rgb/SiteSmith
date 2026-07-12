@@ -123,10 +123,10 @@ export function DetectedImagesList({
         <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto pr-1" data-testid="detected-images">
           {visible.map((d) => (
             <DetectionCard
-              key={`${d.sourceFile}|${d.sourceTag}|${d.sourceAttr}|${d.rawUrl}|${d.resolvedPath}|${d.status}`}
+              key={`${detectionKey(d)}|${d.resolvedPath}|${d.status}`}
               detection={d}
               thumbnail={d.resolvedPath ? thumbnails.get(d.resolvedPath) : undefined}
-              selected={selectedKey === `${d.sourceFile}|${d.rawUrl}`}
+              selected={selectedKey === detectionKey(d)}
               onSelect={onSelect}
             />
           ))}
@@ -218,7 +218,7 @@ function DetectionCard({ detection, thumbnail, selected, onSelect }: CardProps) 
     <li>
       <button
         type="button"
-        onClick={() => onSelect(`${sourceFile}|${rawUrl}`)}
+        onClick={() => onSelect(detectionKey(detection))}
         // "current" rather than "pressed" — the selection is mutually
         // exclusive and updates the right-panel editor, so AT users
         // benefit from "current item" framing.
@@ -295,6 +295,10 @@ function DetectionCard({ detection, thumbnail, selected, onSelect }: CardProps) 
       </button>
     </li>
   );
+}
+
+function detectionKey(detection: ImageDetection): string {
+  return `${detection.sourceFile}::${detection.sourceTag}::${detection.sourceAttr}::${detection.rawUrl}`;
 }
 
 /**
