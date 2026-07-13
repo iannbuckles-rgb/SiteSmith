@@ -145,7 +145,11 @@ function probeIframeCapability(): Promise<boolean> {
       resolve(ok);
     };
     const onMessage = (event: MessageEvent) => {
-      if (event.data && (event.data as { type?: string }).type === 'mockswap:preview-probe') {
+      if (
+        event.source === iframe.contentWindow
+        && event.data
+        && (event.data as { type?: string }).type === 'mockswap:preview-probe'
+      ) {
         finish(true);
       }
     };

@@ -8,7 +8,7 @@ import {
   type DragEvent,
 } from 'react';
 
-import { formatBytes } from '../lib/fileTypes';
+import { formatBytes, IMAGE_FILE_ACCEPT, isSupportedImageFile } from '../lib/fileTypes';
 import {
   ALL_SCOPE,
   editableEntries,
@@ -17,11 +17,6 @@ import {
   type ManualReplacePlan,
 } from '../lib/manualReplace';
 import type { AppliedPatch, LoadedProject } from '../types';
-
-const ACCEPTED_IMAGE_MIMES = [
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'image/svg+xml', 'image/avif', 'image/x-icon',
-];
 
 interface ManualReplacePanelProps {
   project: LoadedProject | null;
@@ -68,6 +63,7 @@ export function ManualReplacePanel({
   const [planning, setPlanning] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const planRequestIdRef = useRef(0);
 
   // Live-preview the image the user is about to drop in. Object URLs are
   // revoked when the file changes or the panel unmounts.
@@ -81,49 +77,56 @@ export function ManualReplacePanel({
 
   // Reset when the project changes \u2014 the dropdown's file list invalidates.
   useEffect(() => {
+    planRequestIdRef.current += 1;
     setScope(ALL_SCOPE);
     setSearchText('');
     setReplacementText('');
     setImageFile(null);
     setCustomAssetFilename('');
     setPlan(null);
+    setPlanning(false);
   }, [project]);
 
-  const handleSearch = useCallback(async (next: string) => {
-    setSearchText(next);
-    if (!project || !next.trim()) { setPlan(null); return; }
+  const refreshPlan = useCallback(async (
+    nextScope: string,
+    nextSearchText: string,
+    nextReplaceAll: boolean,
+  ) => {
+    const requestId = ++planRequestIdRef.current;
+    if (!project || !nextSearchText.trim()) {
+      setPlan(null);
+      setPlanning(false);
+      return;
+    }
     setPlanning(true);
     try {
-      const p = await planManualReplace(project, scope, next, replaceAll);
-      setPlan(p);
+      const nextPlan = await planManualReplace(project, nextScope, nextSearchText, nextReplaceAll);
+      if (planRequestIdRef.current === requestId) setPlan(nextPlan);
+    } catch {
+      if (planRequestIdRef.current === requestId) setPlan(null);
     } finally {
-      setPlanning(false);
+      if (planRequestIdRef.current === requestId) setPlanning(false);
     }
-  }, [project, scope, replaceAll]);
+  }, [project]);
+
+  const handleSearch = useCallback((next: string) => {
+    setSearchText(next);
+    void refreshPlan(scope, next, replaceAll);
+  }, [scope, replaceAll, refreshPlan]);
 
   const handleScopeChange = useCallback((next: string) => {
     setScope(next);
-    if (!project || !searchText.trim()) return;
-    setPlanning(true);
-    planManualReplace(project, next, searchText, replaceAll).then((p) => {
-      setPlan(p);
-      setPlanning(false);
-    }).catch(() => setPlanning(false));
-  }, [project, searchText, replaceAll]);
+    void refreshPlan(next, searchText, replaceAll);
+  }, [searchText, replaceAll, refreshPlan]);
 
   const handleReplaceAllToggle = useCallback((next: boolean) => {
     setReplaceAll(next);
-    if (!project || !searchText.trim()) return;
-    setPlanning(true);
-    planManualReplace(project, scope, searchText, next).then((p) => {
-      setPlan(p);
-      setPlanning(false);
-    }).catch(() => setPlanning(false));
-  }, [project, searchText, scope]);
+    void refreshPlan(scope, searchText, next);
+  }, [searchText, scope, refreshPlan]);
 
   const handleImage = useCallback((file: File | null | undefined) => {
     if (!file) return;
-    if (!file.type.startsWith('image/')) return;
+    if (!isSupportedImageFile(file)) return;
     setImageFile(file);
     if (!customAssetFilename.trim()) {
       const lastSlash = Math.max(file.name.lastIndexOf('/'), file.name.lastIndexOf('\\'));
@@ -139,6 +142,7 @@ export function ManualReplacePanel({
 
   const handleApply = useCallback(() => {
     if (!project || !searchText.trim()) return;
+    planRequestIdRef.current += 1;
     onApply({
       scope,
       searchText,
@@ -152,6 +156,7 @@ export function ManualReplacePanel({
     setImageFile(null);
     setCustomAssetFilename('');
     setPlan(null);
+    setPlanning(false);
   }, [
     project, scope, searchText, replacementText, replaceAll,
     imageFile, customAssetFilename, onApply,
@@ -608,7 +613,7 @@ function ImagePicker({
           <input
             ref={inputRef}
             type="file"
-            accept={ACCEPTED_IMAGE_MIMES.join(',')}
+            accept={IMAGE_FILE_ACCEPT}
             onChange={(e: ChangeEvent<HTMLInputElement>) => {
               onPickFile(e.target.files?.[0]);
               e.target.value = '';

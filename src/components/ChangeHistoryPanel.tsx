@@ -1,6 +1,6 @@
 import { useMemo, type ReactNode } from 'react';
 
-import type { Checkpoint } from '../lib/idb';
+import type { CheckpointSummary } from '../lib/idb';
 import type { AppliedPatch } from '../types';
 import { formatBytes } from '../lib/fileTypes';
 import { formatRelativeSavedAt } from '../lib/relativeTime';
@@ -42,7 +42,7 @@ interface ChangeHistoryPanelProps {
   onUndoAll: () => void;
   onResetSelectedImage: () => void;
   onResetProject: () => void;
-  checkpoints: Checkpoint[];
+  checkpoints: CheckpointSummary[];
   checkpointsLoading: boolean;
   checkpointBusyId: string | null;
   checkpointSaveBusy: boolean;
@@ -203,7 +203,7 @@ function CheckpointTimeline({
   onRestore,
   onDelete,
 }: {
-  checkpoints: Checkpoint[];
+  checkpoints: CheckpointSummary[];
   loading: boolean;
   busyId: string | null;
   onRestore: (id: string) => void;

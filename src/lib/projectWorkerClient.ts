@@ -133,7 +133,13 @@ export class ProjectWorkerClient {
         pending.cleanup = () => options.signal?.removeEventListener('abort', onAbort);
       }
       this.pending.set(id, pending);
-      this.worker.postMessage(request);
+      try {
+        this.worker.postMessage(request, transferablesForRequest(request));
+      } catch (error) {
+        this.pending.delete(id);
+        pending.cleanup?.();
+        reject(error);
+      }
     });
   }
 
@@ -173,4 +179,14 @@ let projectWorkerClient: ProjectWorkerClient | null = null;
 export function getProjectWorkerClient(): ProjectWorkerClient {
   if (!projectWorkerClient) projectWorkerClient = new ProjectWorkerClient();
   return projectWorkerClient;
+}
+
+/** Mutation snapshots own freshly-copied ArrayBuffers, so they can be moved
+ * into the worker instead of cloned. This is particularly important for large
+ * replacement assets during autosave and export. */
+function transferablesForRequest(request: ProjectWorkerRequest): Transferable[] {
+  if (request.type !== 'build-export' && request.type !== 'generate-zip') return [];
+  return request.mutations.writes
+    .filter((write) => write.kind === 'bytes')
+    .map((write) => write.bytes);
 }

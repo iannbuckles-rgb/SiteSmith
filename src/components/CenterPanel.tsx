@@ -47,6 +47,7 @@ import { createPortal } from 'react-dom';
 import type { LoadedProject } from '../types';
 import type { PreviewIndex } from '../lib/previewService';
 import {
+  previewSandboxPermissions,
   VIEWPORT_DIMENSIONS,
   ZOOM_PRESETS,
   type PreviewMode,
@@ -643,9 +644,11 @@ function PreviewStage({
             // dynamic URLs, workers and wasm natively. A service worker can only
             // control a same-origin client, so `allow-same-origin` is required —
             // without it the frame's opaque origin bypasses the worker and the
-            // project can't render. `allow-top-navigation` is intentionally
-            // omitted so a previewed page can never navigate the editor away.
-            sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox"
+            // project can't render. The blob fallback does not need that flag
+            // and therefore stays at an opaque origin. `allow-top-navigation`
+            // is intentionally omitted in both modes so a previewed page can
+            // never navigate the editor away.
+            sandbox={previewSandboxPermissions(src)}
             allow="clipboard-read; clipboard-write"
             data-testid="preview-iframe"
             className="block h-full w-full border-0 bg-white"

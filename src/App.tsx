@@ -14,7 +14,7 @@ import { LeftPanel } from './components/LeftPanel';
 import type { LogoHelperSuccessSummary } from './components/LogoHelperPanel';
 import { RightPanel } from './components/RightPanel';
 import { WorkspaceShell, type WorkspacePane } from './components/WorkspaceShell';
-import type { EditorReorderTarget, EditorSelection, PreviewHistoryState, PreviewMode, PreviewViewport } from './lib/previewControls';
+import { isMessageFromPreviewFrame, type EditorReorderTarget, type EditorSelection, type PreviewHistoryState, type PreviewMode, type PreviewViewport } from './lib/previewControls';
 import { applyPlaceholder, applyRemove, applyReplacement } from './lib/assetReplacer';
 import { bulkReplace } from './lib/bulkReplace';
 import { createAbortError, isAbortError, throwIfAborted } from './lib/cancellation';
@@ -31,6 +31,7 @@ import {
   saveProjectRecord,
   saveSession,
   type Checkpoint,
+  type CheckpointSummary,
   type PersistedSelection,
   type PersistedSession,
   type PersistedTheme,
@@ -59,7 +60,8 @@ import type {
 } from './types';
 import { IDLE_PHASE, type Phase } from './lib/progress';
 import { Toast, type ToastData } from './components/Toast';
-import { formatBytes } from './lib/fileTypes';
+import { formatBytes, isSupportedImageFile } from './lib/fileTypes';
+import { readPersistedPatches } from './lib/persistedPatch';
 
 /** Cap concurrent thumbnail reads to keep memory bounded. */
 const THUMBNAIL_CONCURRENCY = 4;
@@ -224,17 +226,25 @@ export default function App() {
   const [saveAtRisk, setSaveAtRisk] = useState(false);
   const [projectSaveBusy, setProjectSaveBusy] = useState(false);
   const [activeProjectRecordId, setActiveProjectRecordId] = useState<string | null>(null);
-  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [checkpoints, setCheckpoints] = useState<CheckpointSummary[]>([]);
   const [checkpointsLoading, setCheckpointsLoading] = useState(false);
   const [checkpointSaveBusy, setCheckpointSaveBusy] = useState(false);
   const [checkpointBusyId, setCheckpointBusyId] = useState<string | null>(null);
   const [checkpointRestoreTarget, setCheckpointRestoreTarget] = useState<Checkpoint | null>(null);
   const saveFailureToastShownRef = useRef(false);
   const saveFailureToastIdRef = useRef<string | null>(null);
+  const sessionSaveGenerationRef = useRef(0);
   const editorNudgeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const patchesByKeyRef = useRef<Map<string, AppliedPatch>>(new Map());
+  const archiveMutationVersionRef = useRef(0);
+  const snapshotBlobCacheRef = useRef<{
+    zip: LoadedProject['zip'];
+    mutationVersion: number;
+    blob: Blob;
+  } | null>(null);
 
   const updatePatchesByKey = useCallback((updater: (current: Map<string, AppliedPatch>) => Map<string, AppliedPatch>) => {
+    archiveMutationVersionRef.current += 1;
     setPatchesByKey((current) => {
       const next = updater(current);
       patchesByKeyRef.current = next;
@@ -244,6 +254,7 @@ export default function App() {
 
   const replacePatchesByKey = useCallback((next: Map<string, AppliedPatch>) => {
     patchesByKeyRef.current = next;
+    archiveMutationVersionRef.current += 1;
     setPatchesByKey(next);
   }, []);
 
@@ -784,7 +795,15 @@ export default function App() {
   const buildCurrentProjectSnapshot = useCallback(async (): Promise<PersistedProjectSnapshot | null> => {
     if (!project) return null;
     await flushPendingEditorWrites();
-    const mutatedZipBlob = await project.zip.generateAsync({ type: 'blob', compression: 'STORE' });
+    const mutationVersion = archiveMutationVersionRef.current;
+    const cached = snapshotBlobCacheRef.current;
+    const mutatedZipBlob = cached?.zip === project.zip && cached.mutationVersion === mutationVersion
+      ? cached.blob
+      : await project.zip.generateAsync({ type: 'blob', compression: 'STORE' });
+    if (archiveMutationVersionRef.current !== mutationVersion) {
+      throw new Error('The project changed while its snapshot was being prepared. Save again after the current edit finishes.');
+    }
+    snapshotBlobCacheRef.current = { zip: project.zip, mutationVersion, blob: mutatedZipBlob };
     // patchesByKey Map → JSON-safe Array
     const patches = Array.from(patchesByKeyRef.current.entries()).map(([id, patch]) => ({ id, patch }));
     const selection = buildCurrentSelection();
@@ -806,7 +825,7 @@ export default function App() {
       selection,
       theme,
     };
-  }, [project, flushPendingEditorWrites, buildCurrentSelection, originalBlob, theme]);
+  }, [project, flushPendingEditorWrites, buildCurrentSelection, originalBlob, theme, previewRevision]);
 
   const saveProjectToLibrary = useCallback(async (mode: 'save' | 'save-as'): Promise<string | null> => {
     if (!project || projectSaveBusy) return null;
@@ -1277,7 +1296,7 @@ export default function App() {
   }, []);
 
   const handlePickReplacementFile = useCallback((file: File) => {
-    if (!file.type.startsWith('image/')) {
+    if (!isSupportedImageFile(file)) {
       setReplacementError(
         `"${file.name}" isn't an image. Only image files (PNG, JPG, WebP, GIF, SVG) can be used as replacements.`,
       );
@@ -1677,7 +1696,7 @@ export default function App() {
   // ------------------------------------------------------------------------
 
   const handlePickLogoFile = useCallback((file: File) => {
-    if (!file.type.startsWith('image/')) {
+    if (!isSupportedImageFile(file)) {
       setLogoHelperError(`"${file.name}" isn't an image. Only image files (PNG, JPG, WebP, SVG, GIF) can be used as a logo.`);
       return;
     }
@@ -1933,7 +1952,7 @@ export default function App() {
 
   const handleApplyEditorImageFile = useCallback(async (file: File) => {
     if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'image') return;
-    if (!file.type.startsWith('image/')) {
+    if (!isSupportedImageFile(file)) {
       setEditorError(`"${file.name}" isn't an image. Choose a PNG, JPG, WebP, GIF, SVG, AVIF, BMP, or icon file.`);
       return;
     }
@@ -2133,7 +2152,7 @@ export default function App() {
   // ------------------------------------------------------------------------
 
   const handlePickBulkFile = useCallback((file: File) => {
-    if (!file.type.startsWith('image/')) {
+    if (!isSupportedImageFile(file)) {
       setHistoryError(`"${file.name}" isn't an image. Bulk replace needs an image file.`);
       return;
     }
@@ -2304,6 +2323,7 @@ export default function App() {
     // sticky workflows (e.g. "always preview at tablet width") keep
     // working without re-toggling.
     restoreMutatedZipArrayRef.current = null;
+    snapshotBlobCacheRef.current = null;
     void clearSession();
   }, [releaseWorkerProject, updateProjectRecordIdentity, replacePatchesByKey]);
 
@@ -2349,6 +2369,7 @@ export default function App() {
   // banner-load effect would fire on first render with no data and pull
   // a stale entry back).
   useEffect(() => {
+    const generation = ++sessionSaveGenerationRef.current;
     if (!project) {
       markSessionSaveOk();
       return;
@@ -2357,17 +2378,24 @@ export default function App() {
       try {
         const snapshot = await buildCurrentProjectSnapshot();
         if (!snapshot) return;
+        if (sessionSaveGenerationRef.current !== generation) return;
         const saveOutcome = await saveSession(snapshot);
+        if (sessionSaveGenerationRef.current !== generation) return;
         if (saveOutcome === 'ok') {
           markSessionSaveOk();
         } else {
           markSessionSaveFailed();
         }
       } catch {
-        markSessionSaveFailed();
+        if (sessionSaveGenerationRef.current === generation) markSessionSaveFailed();
       }
     }, SAVE_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
+    return () => {
+      window.clearTimeout(handle);
+      if (sessionSaveGenerationRef.current === generation) {
+        sessionSaveGenerationRef.current += 1;
+      }
+    };
   }, [project, buildCurrentProjectSnapshot, markSessionSaveOk, markSessionSaveFailed]);
 
   // ------------------------------------------------------------------------
@@ -2402,35 +2430,51 @@ export default function App() {
     }
     setPreviewBuilding(true);
     setPreview(null);
+    setError(null);
     // Don't reset currentPagePath eagerly — the awaited rebuild
     // below reconciliates whether the previously-active page still
     // exists in the regenerated index and, if it does, preserves
     // BOTH the path and the history stack (otherwise every edit
     // would dump the user's navigation breadcrumbs).
     (async () => {
-      const index = await buildPreview(project, liveEntries);
-      if (cancelled) return;
-      for (const url of index.urls.values()) createdUrls.push(url);
-      setPreview(index);
-      setCurrentPagePath((cur) => {
-        if (cur && index.urls.has(cur)) return cur;
-        return index.primaryPath;
-      });
-      setPreviewHistory((prev) => {
-        const cur = currentPagePathRef.current;
-        const stillExists = !!cur && index.urls.has(cur);
-        if (stillExists && prev.pages.length > 0 && prev.pages.includes(cur as string)) {
-          // Keep the stack; snap `index` to wherever `cur` lives now.
-          return { pages: prev.pages, index: prev.pages.indexOf(cur as string) };
+      try {
+        const index = await buildPreview(project, liveEntries);
+        // Track URLs before consulting the cancellation flag. The blob fallback
+        // may finish after a newer rebuild started; without this ordering its
+        // newly-created object URLs would never reach either cleanup path.
+        for (const url of index.urls.values()) createdUrls.push(url);
+        if (cancelled) {
+          for (const url of createdUrls) URL.revokeObjectURL(url);
+          createdUrls.length = 0;
+          return;
         }
-        // Page was renamed / removed OR this is the initial load —
-        // reset history to a single-entry stack anchored on the live
-        // page (initial load: primaryPath; after a rename: primary).
-        const nextPath = stillExists ? (cur as string) : index.primaryPath;
-        if (!nextPath) return { pages: [], index: -1 };
-        return { pages: [nextPath], index: 0 };
-      });
-      setPreviewBuilding(false);
+        setPreview(index);
+        setCurrentPagePath((cur) => {
+          if (cur && index.urls.has(cur)) return cur;
+          return index.primaryPath;
+        });
+        setPreviewHistory((prev) => {
+          const cur = currentPagePathRef.current;
+          const stillExists = !!cur && index.urls.has(cur);
+          if (stillExists && prev.pages.length > 0 && prev.pages.includes(cur as string)) {
+            // Keep the stack; snap `index` to wherever `cur` lives now.
+            return { pages: prev.pages, index: prev.pages.indexOf(cur as string) };
+          }
+          // Page was renamed / removed OR this is the initial load —
+          // reset history to a single-entry stack anchored on the live
+          // page (initial load: primaryPath; after a rename: primary).
+          const nextPath = stillExists ? (cur as string) : index.primaryPath;
+          if (!nextPath) return { pages: [], index: -1 };
+          return { pages: [nextPath], index: 0 };
+        });
+      } catch (err) {
+        if (!cancelled) {
+          setPreview(null);
+          setError(`Preview could not be built: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } finally {
+        if (!cancelled) setPreviewBuilding(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -2502,6 +2546,8 @@ export default function App() {
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
+      const previewFrame = document.querySelector<HTMLIFrameElement>('[data-testid="preview-iframe"]');
+      if (!isMessageFromPreviewFrame(event, previewFrame)) return;
       const data = event.data;
       if (!data || typeof data !== 'object') return;
       const type = (data as { type?: string }).type;
@@ -3169,20 +3215,7 @@ function createCheckpointId(): string {
   return `checkpoint-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function persistedPatchesToApplied(raw: Array<unknown>): AppliedPatch[] {
-  const patches: AppliedPatch[] = [];
-  for (const entry of raw) {
-    const candidate = isObjectRecord(entry) && 'patch' in entry ? entry.patch : entry;
-    if (isAppliedPatch(candidate)) patches.push(candidate);
-  }
-  return patches;
-}
-
-function isAppliedPatch(value: unknown): value is AppliedPatch {
-  return isObjectRecord(value)
-    && typeof value.id === 'string'
-    && typeof value.action === 'string';
-}
+const persistedPatchesToApplied = readPersistedPatches;
 
 function readEditorSelection(value: unknown, sourceFileHint: unknown): EditorSelection | null {
   if (!isObjectRecord(value)) return null;

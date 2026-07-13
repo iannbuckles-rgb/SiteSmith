@@ -19,17 +19,24 @@ interface WorkerProject {
 
 const projects = new Map<string, WorkerProject>();
 const canceledRequests = new Set<number>();
+const activeRequests = new Set<number>();
 let nextProjectId = 1;
 
 self.addEventListener('message', (event: MessageEvent<ProjectWorkerRequest>) => {
   const request = event.data;
   if (request.type === 'cancel') {
-    canceledRequests.add(request.id);
+    // Ignore late cancellation messages for requests that already completed;
+    // otherwise their ids accumulate for the lifetime of the worker.
+    if (activeRequests.has(request.id)) canceledRequests.add(request.id);
     return;
   }
+  activeRequests.add(request.id);
   void handleRequest(request).catch((error: unknown) => {
     if (consumeCanceled(request.id)) return;
     postError(request.id, error);
+  }).finally(() => {
+    activeRequests.delete(request.id);
+    canceledRequests.delete(request.id);
   });
 });
 
@@ -52,7 +59,6 @@ async function handleRequest(request: ProjectWorkerRequest): Promise<void> {
         fileName: project.fileName,
         entries: project.entries,
         summary: project.summary,
-        detections: [],
         logoCandidates,
       });
       return;
@@ -230,11 +236,23 @@ function postProgress(id: number, progress: number): void {
 }
 
 function postResponse(id: number, result: unknown): void {
-  postMessage({ type: 'response', id, result } satisfies ProjectWorkerResponse);
+  const response = { type: 'response', id, result } satisfies ProjectWorkerResponse;
+  if (result instanceof ArrayBuffer) {
+    postWorkerMessage(response, [result]);
+    return;
+  }
+  postWorkerMessage(response);
 }
 
 function postError(id: number, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error ? error.stack : undefined;
   postMessage({ type: 'error', id, message, stack } satisfies ProjectWorkerResponse);
+}
+
+function postWorkerMessage(message: ProjectWorkerResponse, transfer: Transferable[] = []): void {
+  const scope = self as unknown as {
+    postMessage(value: ProjectWorkerResponse, transferables?: Transferable[]): void;
+  };
+  scope.postMessage(message, transfer);
 }

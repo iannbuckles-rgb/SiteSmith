@@ -86,11 +86,8 @@ interface PersistedSessionV1 {
   projectMeta: PersistedProjectMeta | null;
   mutatedZipBlob: Blob | null;
   originalZipBlob: Blob | null;
-  /** Each entry is the patch id and its serialised patch. Both are
-   *  serialised via JSON.stringify before being put into IDB because
-   *  IDB does not serialise Raw JSObjects natively in every browser
-   *  (Chromium does via structured clone, but iOS Safari historically
-   *  had quirks with Map / Set / Date instances). */
+  /** Each entry is the patch id and a plain-object patch. Maps/Sets are
+   * normalized by the App layer before IDB's structured clone runs. */
   patches: Array<{ id: string; patch: unknown }>;
   selection: PersistedSelection | null;
   theme?: PersistedTheme;
@@ -114,6 +111,8 @@ export type SavedProject = Omit<PersistedSession, 'schemaVersion'> & {
   thumbnail?: string;
 };
 
+export type SavedProjectSummary = Omit<SavedProject, 'mutatedZipBlob' | 'originalZipBlob'>;
+
 export interface Checkpoint {
   id: string;
   projectId: string;
@@ -122,6 +121,8 @@ export interface Checkpoint {
   mutatedZipBlob: Blob;
   patches: Array<{ id: string; patch: unknown }>;
 }
+
+export type CheckpointSummary = Omit<Checkpoint, 'mutatedZipBlob'>;
 
 // ---------------------------------------------------------------------------
 // Browser IDB plumbing (the standard mozilla-recipe promise wrapper).
@@ -236,7 +237,7 @@ export async function clearSession(): Promise<void> {
   }
 }
 
-export async function listProjects(): Promise<SavedProject[]> {
+export async function listProjects(): Promise<SavedProjectSummary[]> {
   const db = await getDb();
   if (!db) return [];
   try {
@@ -310,7 +311,7 @@ export async function renameProjectRecord(id: string, name: string): Promise<voi
   }
 }
 
-export async function listCheckpoints(projectId: string): Promise<Checkpoint[]> {
+export async function listCheckpoints(projectId: string): Promise<CheckpointSummary[]> {
   const db = await getDb();
   if (!db) return [];
   try {
@@ -490,17 +491,17 @@ function writeCheckpoint(db: IDBDatabase, cp: Checkpoint): Promise<void> {
   });
 }
 
-function stripProjectBlobs(project: SavedProject): SavedProject {
+function stripProjectBlobs(project: SavedProject): SavedProjectSummary {
   const metadata = { ...project } as Partial<SavedProject>;
   delete metadata.mutatedZipBlob;
   delete metadata.originalZipBlob;
-  return metadata as SavedProject;
+  return metadata as SavedProjectSummary;
 }
 
-function stripCheckpointBlob(checkpoint: Checkpoint): Checkpoint {
+function stripCheckpointBlob(checkpoint: Checkpoint): CheckpointSummary {
   const metadata = { ...checkpoint } as Partial<Checkpoint>;
   delete metadata.mutatedZipBlob;
-  return metadata as Checkpoint;
+  return metadata as CheckpointSummary;
 }
 
 function isQuotaExceededError(err: unknown): boolean {

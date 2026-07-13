@@ -15,7 +15,6 @@ export interface ParseProjectResult {
   fileName: string;
   entries: ZipEntryMeta[];
   summary: ProjectSummary;
-  detections: ImageDetection[];
   logoCandidates: LogoCandidate[];
 }
 

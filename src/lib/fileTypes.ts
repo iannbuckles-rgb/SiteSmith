@@ -5,6 +5,30 @@ const IMAGE_EXTENSIONS = new Set([
 ]);
 const FONT_EXTENSIONS = new Set(['woff', 'woff2', 'ttf', 'otf', 'eot']);
 
+/** Shared file-picker contract for every image replacement surface. Including
+ * extensions matters because browsers commonly leave `File.type` empty for
+ * SVG, ICO, AVIF, or files supplied by drag-and-drop. */
+export const IMAGE_FILE_ACCEPT = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+  'image/avif',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+  'image/bmp',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.svg',
+  '.avif',
+  '.ico',
+  '.bmp',
+].join(',');
+
 /** Returns the lowercase extension without the dot, or '' if none. */
 export function getExtension(name: string): string {
   const dot = name.lastIndexOf('.');
@@ -21,6 +45,14 @@ export function getCategory(name: string): FileCategory {
   if (IMAGE_EXTENSIONS.has(ext)) return 'image';
   if (FONT_EXTENSIONS.has(ext)) return 'font';
   return 'other';
+}
+
+/** Accept browser-identified images and known image extensions. The extension
+ * fallback keeps valid local files usable when the OS does not provide a MIME
+ * type; source bytes are still stored unchanged by the replacement pipeline. */
+export function isSupportedImageFile(file: Pick<File, 'name' | 'type'>): boolean {
+  const mime = file.type.trim().toLowerCase();
+  return mime.startsWith('image/') || IMAGE_EXTENSIONS.has(getExtension(file.name));
 }
 
 /** Human-readable byte size (1024-based). Returns '0 B' for zero. */

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 
-import { formatBytes } from '../lib/fileTypes';
+import { formatBytes, IMAGE_FILE_ACCEPT, isSupportedImageFile } from '../lib/fileTypes';
 import { pickByRole } from '../lib/logoHelper';
 import type {
   LogoCandidate,
@@ -15,11 +15,6 @@ const ROLES: Array<{ role: LogoRole; label: string; description: string }> = [
   { role: 'favicon',       label: 'Favicon',        description: 'The browser tab icon (`<link rel="icon">`).' },
   { role: 'appleTouchIcon', label: 'Apple touch icon', description: 'iOS home-screen icon (`apple-touch-icon`).' },
   { role: 'manifestIcon',  label: 'Manifest icons', description: 'PWA / manifest.json `icons[]` entries.' },
-];
-
-const ACCEPTED_IMAGE_MIMES = [
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'image/svg+xml', 'image/avif', 'image/x-icon',
 ];
 
 interface LogoHelperPanelProps {
@@ -79,7 +74,7 @@ export function LogoHelperPanel({
 
   const handleFile = useCallback((file: File | null | undefined) => {
     if (!file) return;
-    if (!file.type.startsWith('image/')) return;
+    if (!isSupportedImageFile(file)) return;
     setPendingFile(file);
     onPickFile(file);
   }, [onPickFile]);
@@ -292,7 +287,7 @@ function UploadArea({
       <input
         ref={inputRef}
         type="file"
-        accept={ACCEPTED_IMAGE_MIMES.join(',')}
+        accept={IMAGE_FILE_ACCEPT}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
           onPickFile(e.target.files?.[0]);
           e.target.value = '';

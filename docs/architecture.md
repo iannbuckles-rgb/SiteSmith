@@ -1,423 +1,224 @@
 # MockupSwap — Architecture
 
-> **Maintenance rule:** If architecture changes, update architecture.md. If architecture does not change, leave it untouched.
+> Maintenance rule: update this document whenever architecture changes.
+> Last reconciled with the codebase: 2026-07-13.
 
----
+## 1. Purpose and boundaries
 
-## 1. Project purpose
+MockupSwap is a local-first React application for loading a static website zip,
+detecting image references, editing HTML/CSS/manifest content, previewing the
+result, and exporting a deployable zip. Project bytes remain in the browser;
+there is no application backend, authentication provider, telemetry service, or
+API key.
 
-**MockupSwap** is a single-page browser tool for **swapping images and logos inside any static website `.zip`** — without touching a text editor. The user uploads a site archive, points at the image(s) they want to change, drops in replacements, and exports an updated `.zip` that is ready to re-deploy.
+The editor understands static HTML, CSS, manifests, and literal source changes.
+It can render active built sites through the preview service worker, but it does
+not statically discover arbitrary JavaScript-generated asset paths.
 
-Key product properties:
+## 2. Stack
 
-- **Local-only.** No file ever leaves the browser. No backend, no API keys, no environment file.
-- **Static-site only.** Reads HTML / CSS / manifest; does not understand dynamic JS module imports.
-- **Per-patch reversible.** Every apply snapshots pre/post source text so the user can undo any single change, the last change, the per-image stack, or the whole project.
+| Layer | Implementation |
+| --- | --- |
+| UI | React 18 + TypeScript 5 + Tailwind CSS 4 |
+| Build | Vite 5 |
+| Archive | JSZip 3 behind `ZipArchiveLike` |
+| Worker | Module Web Worker for zip parse, logo scan, snapshot, and export |
+| Detection | DOMParser for HTML; comment-aware scanners for CSS/manifest |
+| Preview | Service worker path server, with blob-based fallback |
+| Persistence | IndexedDB sessions, named projects, and checkpoints |
+| Tests | Vitest 4 + jsdom + V8 coverage |
 
-Intended user: anyone iterating on a static mockup (from a generator, a designer, or a prior site) who needs to swap assets before deploy.
+Production code is strict TypeScript with unused locals/parameters rejected.
+`npm run build` runs tests, TypeScript build validation, and Vite.
 
----
+## 3. Major modules
 
-## 2. Technology stack
+```text
+src/
+├── App.tsx                         orchestration and cross-feature state
+├── components/
+│   ├── WorkspaceShell.tsx          desktop/tablet/mobile pane layout
+│   ├── LeftPanel.tsx               upload, projects, files, modes
+│   ├── CenterPanel.tsx             preview toolbar and iframe
+│   ├── RightPanel.tsx              inspector, editor actions, export
+│   ├── ChangeHistoryPanel.tsx      patches and checkpoints
+│   ├── ManualReplacePanel.tsx      literal multi-file replacement
+│   ├── DialogShell.tsx             focus-trapped modal primitive
+│   └── ErrorBoundary.tsx           app/panel recovery UI
+├── lib/
+│   ├── archiveTypes.ts             JSZip-compatible abstraction
+│   ├── workerZipArchive.ts         main-thread worker-backed facade
+│   ├── projectWorkerClient.ts      request/progress/cancel transport
+│   ├── imageDetector.ts            image reference scan
+│   ├── assetReplacer.ts            replace/remove/placeholder surgery
+│   ├── editorPatch.ts              direct editor mutations
+│   ├── undoStack.ts                patch reversal
+│   ├── previewServer.ts            service-worker preview population
+│   ├── previewService.ts           opaque blob fallback
+│   ├── exportService.ts            zip/report generation helpers
+│   ├── idb.ts                      persistence stores and outcomes
+│   └── persistedPatch.ts           restore-time union validation
+└── workers/
+    ├── projectWorker.ts            JSZip ownership and heavy packaging
+    └── projectWorkerProtocol.ts    typed worker messages
 
-| Layer            | Choice                                          |
-| ---------------- | ----------------------------------------------- |
-| Build tool       | **Vite 5** (`vite` + `@vitejs/plugin-react`)    |
-| Language         | **TypeScript 5** (strict, `noUnusedLocals`, `noUnusedParameters`) |
-| Framework        | **React 18** with `StrictMode`                  |
-| Styling          | **Tailwind CSS 4** (`@tailwindcss/vite`)        |
-| Zip I/O          | **JSZip 3** (browser-only, async)               |
-| Persistence      | **IndexedDB** (hand-rolled, no library)         |
-| Image work       | Browser **Canvas API** + `createImageBitmap`    |
-| Iframe preview   | Native sandboxed `<iframe src="blob:...">` with frame-owned subresource blobs + injected navigation script |
-| Tests             | None (intentional; no test framework configured) |
-
-**No** backend, **no** auth, **no** third-party SaaS, **no** environment variables, **no** build secrets.
-
----
-
-## 3. Directory structure
-
-```
-/
-├── index.html                    — single entry HTML; mounts #root
-├── vite.config.ts                — Vite config (port 5173, host: true)
-├── tsconfig.json / *.app.json / *.node.json
-├── package.json
-└── src/
-    ├── main.tsx                  — createRoot + StrictMode
-    ├── App.tsx                   — top-level state machine, orchestration
-    ├── types.ts                  — all shared types incl. AppliedPatch union
-    ├── index.css                 — Tailwind import + scrollbar tweaks
-    ├── components/               — UI layer (all TSX)
-    │   ├── LeftPanel.tsx         — file tree + tabbed bottom panel
-    │   ├── CenterPanel.tsx       — iframe preview + toolbar
-    │   ├── RightPanel.tsx        — asset details + action area + export
-    │   ├── FileTree.tsx          — collapsible directory tree
-    │   ├── ProjectSummary.tsx    — file-count stats card
-    │   ├── DetectedImagesList.tsx — bulk-replace drop zone + filterable list
-    │   ├── ChangeHistoryPanel.tsx — History tab with per-row Undo
-    │   ├── DiffView.tsx          — disclosure-rendered line diff
-    │   ├── LogoHelperPanel.tsx   — Logo Helper tab UI
-    │   ├── ManualReplacePanel.tsx — Manual Replace tab UI
-    │   ├── FitStylePanel.tsx     — object-fit / radius / overlay chips
-    │   ├── UploadButton.tsx      — drag-drop zip upload target
-    │   └── FileIcon.tsx          — inline-SVG icon set (no icon library)
-    └── lib/                      — pure-TS business logic
-        ├── zipReader.ts          — File → LoadedProject
-        ├── imageDetector.ts      — HTML / CSS / manifest → ImageDetection[]
-        ├── logoHelper.ts         — logo scan + apply (header/footer/favicon/apple-touch/manifest)
-        ├── assetReplacer.ts      — applyReplacement / applyRemove / applyPlaceholder
-        ├── bulkReplace.ts        — apply one image to N detections, with rollback
-        ├── manualReplace.ts      — plain-text find/replace, per-file snapshots
-        ├── fitStyles.ts          — applyFitStyleToImg / applyFitStyleToCss
-        ├── previewService.ts     — zip → sandboxed iframe preview index
-        ├── urlRewriter.ts        — rewrite HTML/CSS refs to preview URL tokens
-        ├── urlResolver.ts        — relative-path resolution against zip paths
-        ├── imageReencoder.ts     — optional WebP round-trip via Canvas
-        ├── exportService.ts      — wrap mutated zip + MOCKUPSWAP_CHANGES.md
-        ├── undoStack.ts          — central undoPatchById / undoMany primitive
-        ├── idb.ts                — IndexedDB wrapper (session persistence)
-        ├── fileTree.ts           — flat entries → nested FileNode
-        ├── lineDiff.ts           — LCS line diff for History panel
-        ├── filenameSanitizer.ts  — safe filenames + assets/mockups/<name>
-        ├── pathRelative.ts       — POSIX path.relative from source to target
-        ├── mime.ts               — extension → MIME lookup
-        └── fileTypes.ts          — FileCategory, formatBytes, normalizePath
+public/preview-sw.js                path-based virtual preview server
+tests/                              unit/component/in-memory zip tests
 ```
 
-**Generation rules:** `dist/` (Vite output) and `*.tsbuildinfo` files are build artifacts and git-ignored.
+`App.tsx` remains the primary state holder. `WorkspaceShell` isolates responsive
+layout, while domain components receive explicit state and callbacks. This is
+functional but concentrated; the audit roadmap recommends domain hooks before
+adding more features.
 
----
+## 4. Archive and worker model
 
-## 4. Frontend architecture
+On upload, the worker loads JSZip and retains the base archive under a generated
+project id. It returns only file metadata, summary data, and logo candidates.
+The UI holds a `WorkerZipArchive`, which implements the small `ZipArchiveLike`
+surface used by the pure libraries.
 
-### 4.1 Layout
-
-3-column fixed grid (`360px / 1fr / 320px`) under a top bar; tabs sit inside the left panel's bottom region.
-
-```
-┌───────────────────────────────────────────────────────┐
-│  TopBar                              (project name)   │
-├─────────────┬───────────────────────────┬─────────────┤
-│             │                           │             │
-│  LeftPanel  │       CenterPanel         │ RightPanel  │
-│             │       (iframe preview)    │             │
-│ ─ Upload    │                           │ Asset det.  │
-│ ─ Summary   │                           │ Action area │
-│ ─ FileTree  │                           │  Replace    │
-│             │                           │  Remove     │
-│ ─ Mode tabs │                           │  Placehold. │
-│   Images    │                           │ Fit & style │
-│   Logos     │                           │ Export      │
-│   Manual    │                           │             │
-│   History   │                           │             │
-└─────────────┴───────────────────────────┴─────────────┘
+```text
+File
+  → project worker: JSZip + entry metadata + logo scan
+  → WorkerZipArchive facade in App
+  → main-thread DOM image detection (worker file reads)
+  → source/asset overrides retained by the facade
+  → worker snapshot/export with transferable mutation buffers
 ```
 
-### 4.2 Component tree
+Source edits write overrides through the facade; untouched base files stay in
+the worker. Export and persistence send a mutation snapshot back to the worker,
+which composes a fresh zip without copying the entire base archive to the UI.
+ArrayBuffer request/response payloads use transfer lists.
 
-`App.tsx` is the **single top-level state holder** for project + patches + selection + UI mode. Every panel props-drills callbacks + state; there is no Redux / Zustand / Context.
+Cancellation is request-id based. Initial analysis may terminate and recreate
+the worker; late cancel messages are ignored once a request is no longer active.
+Only one live project is expected, and replaced project ids are disposed.
 
-```
-<App>
- ├── <TopBar>                                    — header
- ├── <RestoreBanner>                             — boot-time restore UI
- ├── <LeftPanel>    ─► mode tabs (Images/Logos/Manual/History)
- │     ├── <UploadButton>
- │     ├── <ProjectSummaryCard>
- │     ├── <FileTree>
- │     └── mode-specific panel:
- │         ├── <DetectedImagesList>              — Images tab
- │         ├── <LogoHelperPanel>                 — Logos tab
- │         ├── <ManualReplacePanel>              — Manual tab
- │         └── <ChangeHistoryPanel>              — History tab
- ├── <CenterPanel>  — preview toolbar + <iframe src=blob:...>
- ├── <RightPanel>   ─► <FitStylePanel> + Export section
- └── {bulkConfirm && <BulkConfirmModal>}
-```
+## 5. Detection and mutation
 
-### 4.3 State model
+`imageDetector.ts` reads HTML, standalone CSS, and manifest files. HTML is
+enumerated with `DOMParser`; template/noscript content is intentionally ignored.
+CSS `url()` scanning masks comments before matching. URLs are resolved against
+zip paths and classified as local, missing, or remote/risky.
 
-All persistent state lives in `App.tsx`:
+All mutations operate on `project.zip` and produce an `AppliedPatch` union
+member. Detection-derived actions use a composite identity:
 
-| State                                   | Type                          | Purpose |
-| --------------------------------------- | ----------------------------- | ------- |
-| `project`, `originalFile`, `originalBlob` | `LoadedProject \| null`        | Current and pristine zip |
-| `patchesByKey`                          | `Map<string, AppliedPatch>`   | All applied edits; key is `sourceFile::sourceTag::sourceAttr::rawUrl` (or `#fit` / `manual:`) |
-| `detections`, `logoCandidates`          | `ImageDetection[] / LogoCandidate[]` | Scan results |
-| `selectedDetectionKey`                  | `string \| null`              | Right-panel focus |
-| `thumbnails`                            | `Map<resolvedPath, blobUrl>`  | Preview thumbs |
-| `preview`                               | `PreviewIndex \| null`        | Iframe HTML preview index |
-| `leftPanelMode`                         | `'images' \| 'logos' \| 'manual' \| 'history'` | Active tab |
-| `bulkFolder`, `bulkPendingFile`         | folder scope + dropped image   | Bulk-replace draft |
-| `webpReencode`                          | `boolean`                     | Per-session opt-in for image re-encode |
-| `restoreBanner`, `restoring`            | boot-time restore UI flags     | IndexedDB roll-forward |
-
-### 4.4 Persistence
-
-`src/lib/idb.ts` is a self-contained IndexedDB wrapper:
-
-- **Store:** `mockswap.sessions` keyed by `schemaVersion`.
-- **Schema:** single row containing `projectMeta`, `mutatedZipBlob`, `originalZipBlob`, `patches[]`, `selection`, `savedAt`.
-- **Policy:** writes are **1-second debounced** (`SAVE_DEBOUNCE_MS`) from `App.tsx` after every meaningful mutation. `QuotaExceededError` is caught and silently dropped — the app keeps working from memory.
-- **Boot:** `App.tsx` calls `loadSession()` once on mount; if a row exists and there's no current project, a `<RestoreBanner>` lets the user promote the blob back into the live `LoadedProject`. `Reset Project`/`Reload`/`Upload different zip` all call `clearSession()`.
-
-### 4.5 Concurrency + memory bounds
-
-- Thumbnail reads: 4 at a time, capped at 60 total (`THUMBNAIL_CONCURRENCY`, `THUMBNAIL_CAP`).
-- Detection entry reads: 12 at a time (`READ_CONCURRENCY` in `imageDetector.ts`).
-- Blob URLs from preview: tracked and `URL.revokeObjectURL`'d on cleanup.
-
----
-
-## 5. Backend architecture
-
-**None.** MockupSwap is a pure client-side single-page app. There is no server, no API, no database, no auth provider, no telemetry, no third-party SDKs beyond `JSZip`. The exported artifact is produced in the browser and downloaded via an `<a download>` click.
-
-> If a backend is ever added, this section must be rewritten.
-
----
-
-## 6. Data flow
-
-End-to-end pipeline (single-pass; every step below is local):
-
-```
-   ┌─────────────┐
-   │ USER UPLOAD │ (drag-drop or pick)
-   └───┬─────────┘
-       │ File
-       ▼
-┌──────────────┐    ┌────────────────┐    ┌──────────────────┐
-│ zipReader.ts │───►│ LoadedProject  │───►│ imageDetector.ts │──► ImageDetection[]
-└──────────────┘    │ .zip + entries │    └──────────────────┘
-                    └───────┬────────┘           │
-                            │                   ▼
-                            │           ┌────────────────┐
-                            │           │ logoHelper.ts  │──► LogoCandidate[]
-                            │           └────────────────┘
-                            ▼
-                  ┌───────────────────────┐
-                  │ App.tsx state machine │
-                  └───────────┬───────────┘
-                              │
-       ┌──────────────────────┼────────────────────────────┐
-       │                      │                            │
-       ▼                      ▼                            ▼
-┌──────────────┐      ┌──────────────┐         ┌───────────────────┐
-│ Replace /    │      │ Manual       │         │ Logo Helper       │
-│ Fit & style  │      │ Replace      │         │ (bulk apply)      │
-│ / Remove /   │      │ (text)       │         │                   │
-│ Placeholder  │      └──────┬───────┘         └─────────┬─────────┘
-└──────┬───────┘             │                           │
-       │                     │                           │
-       │   all paths write to project.zip via apply*    │
-       └─────────┬───────────────────┬───────────────────┘
-                 ▼                   ▼
-           ┌──────────────────────────────────┐
-           │ patchesByKey: Map<id, Patch>     │
-           │  → previewService rebuilds the   │
-           │    blob index (previewRevision)  │
-           │  → undoStack.ts remains the      │
-           │    single undo primitive         │
-           └─────────────────┬────────────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              ▼                             ▼
-   ┌────────────────────┐         ┌────────────────────────┐
-   │ CenterPanel        │         │ Diff per applied patch │
-   │ <iframe src=blob…> │         │ ChangeHistoryPanel    │
-   │ (live preview)     │         │ (per-row Undo)        │
-   └────────────────────┘         └────────────────────────┘
-                             │
-                             ▼
-                  ┌───────────────────────┐
-                  │ EXPORT                │
-                  │ exportService.ts      │
-                  │ ─ copies zip entries  │
-                  │ ─ writes              │
-                  │   MOCKUPSWAP_CHANGES.md
-                  │ ─ <a download>        │
-                  └───────────────────────┘
+```text
+sourceFile::sourceTag::sourceAttr::rawUrl
 ```
 
-### 6.1 Detection → patch key
+Fit-style and grouped actions add suffixes or dedicated ids. Every patch stores
+the exact source state needed for undo and a post-state for diff/report output.
+Manual replacements snapshot each touched file. Restore-time patch rows are
+validated by action before entering the live map.
 
-Every `AppliedPatch` is keyed on a stable composite derived from the detection:
+Undo proceeds newest-first when changes share a source file. Per-row undo also
+cascades through later dependent patches so an older source snapshot cannot
+silently overwrite newer tracked work.
 
-```
-${sourceFile}::${sourceTag}::${sourceAttr}::${rawUrl}
-```
+## 6. Preview architecture and trust model
 
-To allow **multiple patches against the same detection** (a replace + a fit-style) the fit-style is keyed with a `#fit` suffix, so the patches map stays one-entry-per-`(location, kind)` pair.
+The preferred path caches project responses under `/preview/<projectId>/...`.
+`public/preview-sw.js` serves them with real MIME types and maps root-relative
+requests back to the requesting preview client's project. Built projects under
+`dist/`, `build/`, or similar roots therefore retain native module imports,
+dynamic imports, `fetch`, workers, wasm, and root-relative assets.
 
-### 6.2 Preview ↔ zip
+HTML is augmented with a runtime that provides navigation bridging and editor
+selection/edit/reorder/nudge messages. The parent accepts those messages only
+when `event.source` is the current iframe window, then validates payload shape.
 
-`previewServer.ts` is the preferred preview path:
+The service-worker iframe requires both `allow-scripts` and `allow-same-origin`
+so the worker controls its requests. Consequently, active preview code is
+same-origin with the editor and must be trusted. Top navigation is omitted. For
+arbitrary third-party uploads, production deployment must move this preview to
+a dedicated origin.
 
-- **Service-worker server**: uploaded files are cached under `/preview/<projectId>/...` and served by `public/preview-sw.js` with real paths and content types. This lets active sites use native URL resolution for ES modules, dynamic imports, `fetch()`, root-relative assets, workers, and wasm.
-- **Site root mapping**: when the selected entry is inside a build directory such as `dist/index.html`, files under that directory are served at the preview web root. Files outside that root keep their zip path so they cannot overwrite the entry page.
-- **Preview sandbox**: `CenterPanel.tsx` renders the preview iframe with `sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox"` and `allow="clipboard-read; clipboard-write"`. `allow-same-origin` is required so the service worker can control the frame; top navigation remains blocked.
-- **Fallback**: if service workers, secure context, or the iframe probe are unavailable, `previewService.ts` builds the legacy blob-backed preview so static HTML/CSS still renders.
-- **Navigation**: `augmentHtml()` injects a `data-mockswap-preview` runtime into every HTML file. It shims storage access when needed and forwards relative `<a href>` clicks to `App.tsx` via `{ type: 'mockswap:navigate', href, sourceFile }`.
+When the served path is unavailable, `previewService.ts` builds top-level blob
+documents containing frame-owned asset blobs. This fallback deliberately omits
+`allow-same-origin`, giving it an opaque origin. Object URLs are tracked and
+revoked on rebuild, cancellation, and unmount.
 
-### 6.3 Undo / Reset
+## 7. Persistence
 
-`undoStack.ts` is the **single primitive** that mutates `project.zip` back to pre-patch state. Every variant of `AppliedPatch` stores `previousSourceText` (or per-file snapshots for `manual-replace`) so undo is topologically safe.
+IndexedDB database `mockswap` currently uses three stores:
 
-- `App.handleUndoPatchById` walks cascades correctly so a `manual-replace` made AFTER a per-detection patch on the same file is included in the rollback.
-- `App.handleUndoAll` reverses patches in DESC `appliedAt` order.
-- `App.handleResetProject` re-runs `handleUpload(originalFile)` to clear ALL state to the pristine original.
+- `sessions`: one schema-version-keyed autosave row;
+- `projects`: named full project records;
+- `checkpoints`: named frozen versions indexed by `projectId`.
 
----
+A snapshot includes project metadata, current STORE-compressed zip blob,
+original zip blob, patch rows, UI selection, theme, and save time. Autosave is
+debounced by one second and explicitly depends on the archive revision. A
+synchronous mutation version prevents the generated blob and patch list from
+coming from different source states. Superseded autosave generations are
+discarded before they write or update status. The zip blob is cached and reused
+while the archive revision is unchanged.
 
-## 7. Authentication
+Save APIs return `ok`, `quota-exceeded`, or `error`. Failure marks the top bar at
+risk and creates one persistent warning per failure streak. Project/checkpoint
+lists return types that omit their stripped blob fields, although the current
+store shape still requires IndexedDB to materialize full rows before stripping.
 
-**None.** No user model, no session token, no SSO. All "sessions" are local IndexedDB rows committed by *the current browser profile on the current device*. Two browsers on the same machine see two independent sessions. Refreshing the tab within the same browser keeps the session alive (subject to IndexedDB quota).
+## 8. Responsive UI and accessibility
 
----
+`WorkspaceShell` owns three responsive modes:
 
-## 8. External integrations
+- desktop: project, preview, and inspector columns;
+- tablet: project + preview with inspector drawer;
+- mobile: one active pane selected by a segmented control.
 
-| Vendor / library | Where                                             | Purpose                                  |
-| ---------------- | ------------------------------------------------- | ---------------------------------------- |
-| **JSZip**        | `zipReader.ts`, `exportService.ts`, every apply    | Read / mutate / write zip in the browser |
-| **React 18**     | all components and `App.tsx`                       | UI rendering + state management          |
-| **Tailwind 4**  | `src/index.css`, every component                   | Utility-CSS styling                      |
-| **Vite 5**      | `vite.config.ts`                                   | Dev server + production bundler         |
+Dialogs use `DialogShell` for initial focus, focus trapping, Escape dismissal,
+and focus restoration. App and preview have independent error boundaries.
+Toasts and progress animations respect reduced motion. A light/dark theme is
+persisted. A few saved-project/checkpoint operations still use native browser
+prompt/confirm dialogs and are roadmap work.
 
-**No outbound network calls of any kind.** Network-only references discovered in source files are flagged (`manus`, `cdn`, `blob-self`, `cross-origin-http`, `protocol-relative`) but never fetched.
+## 9. Build, CSP, and deployment
 
----
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Vite development server |
+| `npm test` | Vitest once with coverage |
+| `npm run typecheck` | strict TypeScript validation |
+| `npm run build` | tests + TypeScript build + Vite output |
+| `npm run preview` | serve the production bundle locally |
 
-## 9. Build and deployment process
+Vite emits the application, project worker, JSZip, export service, image
+re-encoder, and CSS as separate chunks.
 
-### 9.1 Scripts
+`index.html` includes a baseline meta policy. Production hosts should send the
+equivalent or stricter header:
 
-| Script             | What it does                                              |
-| ------------------ | --------------------------------------------------------- |
-| `npm run dev`       | `vite` — dev server, hot reload, port 5173                |
-| `npm run typecheck` | `tsc -b --noEmit` — full project typecheck, no output     |
-| `npm run build`     | `tsc -b && vite build` — emits `dist/`                   |
-| `npm run preview`   | `vite preview` — serve `dist/` at port 4173              |
-
-### 9.2 Requirements
-
-- Node.js **18+**, npm
-- A modern browser with IndexedDB, `<a download>`, `createImageBitmap`, blob URL support
-
-### 9.3 Production deploy
-
-The output of `npm run build` is a **fully static `dist/` directory**:
-
-```
-dist/
- ├── index.html
- └── assets/
-      ├── index-<hash>.css
-      └── index-<hash>.js
-```
-
-Deploy to any static host:
-
-- **Recommended:** Netlify / Vercel / Cloudflare Pages — drop the `dist/` folder, no server config.
-- **Self-hosted:** any web server that serves a Single-Page App (configure history fallback to `index.html`, though MockupSwap has no client-side routes).
-- **Local:** `npx serve dist/` or `python -m http.server` from inside `dist/`.
-
-Recommended production response headers:
-
-```
-Content-Security-Policy: default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline' blob:; script-src 'self' 'unsafe-inline' blob:; worker-src 'self'; frame-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'
+```text
+Content-Security-Policy: default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline' blob:; script-src 'self'; worker-src 'self'; frame-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
 X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Permissions-Policy: camera=(), microphone=(), geolocation=()
 ```
 
-The checked-in `index.html` includes an equivalent meta-CSP so the static app has a baseline policy even on hosts without header configuration. Prefer the response-header form in production because it is applied before document parsing and supports the full CSP surface. Keep `frame-src 'self' blob:`: `'self'` is required for the service-worker preview URLs, while `blob:` keeps the fallback preview available. Chromium also applies the creator policy to `blob:` preview documents, so `script-src` must include `'unsafe-inline' blob:` for the fallback bootstrap, injected navigation script, and frame-owned script blobs; `style-src` includes `blob:` for rewritten stylesheet blobs. `worker-src 'self'` keeps the app's Vite module worker on same-origin assets even though `script-src` permits preview script blobs.
+The preview service worker needs root scope. Configure SPA fallback so
+`/preview-sw.js` remains a real JavaScript asset and is not rewritten to
+`index.html`. Serve over HTTPS (localhost is sufficient for development).
 
-Host-specific examples:
+## 10. Known risks and extension rules
 
-- **Netlify:** create `_headers` in the published output or configure it from the project source so `/*` emits the two headers above.
-- **Vercel:** add a `headers()` rule in `vercel.json` for `/(.*)` with `Content-Security-Policy` and `X-Content-Type-Options`.
-- **Cloudflare Pages:** add a `_headers` file with a `/*` block containing the two headers above.
+Current high-value risks are tracked in `PRODUCTION_READINESS.md`: same-origin
+active preview, monolithic orchestration, full-record IndexedDB listing,
+main-thread DOM scanning, missing archive expansion limits, and incomplete
+browser-level coverage.
 
-### 9.4 Environment variables
+When extending the system:
 
-**None.** MockupSwap has no API keys, no secrets, and no runtime configuration via `.env`. If you add anything environment-driven, this section must be rewritten.
-
-### 9.5 Post-deploy verification checklist
-
-1. Open the deployed URL → empty state visible.
-2. Drag a small `.zip` onto the upload area.
-3. Project summary card → file tree populates → Images tab fills in.
-4. Select a detection → right panel shows asset details.
-5. Drop a replacement image → click Apply → center preview updates.
-6. Click **Export updated zip** → a `.zip` downloads containing `MOCKUPSWAP_CHANGES.md` and your replacement relative-paths.
-
----
-
-## 10. Known architectural risks
-
-### 10.1 Resource / runtime
-
-- **In-memory only.** The full zip + every replacement bytes sits in JS heap. A 200 MB archive can pressure the tab. **Mitigation:** none; users must keep zips reasonable.
-- **IndexedDB quota is silent.** `QuotaExceededError` during `saveSession` is logged and the save is dropped without UI surfacing — the user thinks their work is persisted but it isn't. **Mitigation:** none in v1.
-- **Object-URL leaks if effects are interrupted.** Preview rebuilds revoke prior URLs on cleanup, but a hard nav away from the page mid-build can leave stragglers. **Impact:** low (browser evicts on unload).
-- **Concurrency caps are tuned, not adaptive.** `THUMBNAIL_CAP = 60` and `READ_CONCURRENCY = 12` were picked empirically; very large projects can still feel slow.
-
-### 10.2 Detection coverage
-
-- **No JavaScript rewriting.** References built at runtime (`import.meta.url + hash + ".png"`) are not auto-detected. Users must use the **Manual Replace** tab.
-- **External `.css` files are not scanned for `background-image`.** v1 only scans `<style>` inline and the same file as the containing HTML. **Impact:** background images in standalone CSS files will be rewritten for the preview (via `urlRewriter.ts` preview tokens and frame-owned blobs) but listed as separate detections only when their host HTML file references the CSS file (which we don't follow).
-- **Inert HTML is intentionally skipped by detection.** `imageDetector.ts` uses `DOMParser` over `text/html`, scans the parsed element tree, and ignores images inside HTML comments, `<template>`, and `<noscript>`. Those nodes are not part of the normal rendered image surface; use **Manual Replace** for a project that later clones template markup at runtime.
-- **CSS scanning is comment-aware but not a full CSS parser.** `url()` tokens inside `/* ... */` are ignored for detection and preview/patch rewrites. Malformed or non-standard nested CSS comments are not supported.
-- **`<picture>` / `<source srcset>`** are scanned but the right-panel `Replace` action ONLY supports `img[src]` and `url(...)`; the `Fit & style` panel intentionally rejects `<source>`.
-- **Blob URLs in source** (`blob:...`) are flagged `riskReason: 'blob-self'` and always marked broken.
-
-### 10.3 Patch semantics
-
-- **Handle with care:** `manual-replace` outlives a `fit-style` reorder because the per-file snapshot model assumes the patch was applied to that exact file state. The undo cascade in `App.handleUndoPatchById` accounts for this by including any descendant manual-replace against the same source file.
-- **Source rewrites truncate trailing whitespace** in some interpolated cases (e.g. fit-style appendage). Cosmetic; not a correctness issue.
-- **`imageReencoder.ts` is intentionally lossy for SVG, animated GIF, animated WebP**, falling back to the original bytes. UI surfaces the reason in the History pill.
-
-### 10.4 UI / accessibility
-
-- **Fixed 3-column layout.** Below ~1100 px viewport the layout scrolls horizontally; not optimised for phones.
-- **No project-level diff.** Change History shows per-patch diffs but no "diff my zip vs the original".
-- **Single-color theme.** Dark-only; vue to README "no theme toggle" explicit.
-- **Preview iframe sandboxing** uses `allow-scripts allow-popups allow-forms allow-modals` and intentionally omits `allow-same-origin`, so preview documents run in an opaque origin. Inter-page navigation relies on the injected `postMessage` nav script; parent-side origin checks must explicitly allow `"null"` for those sandboxed events. Subresources must be frame-owned blobs because parent-origin blob URLs are blocked from the opaque-origin sandbox.
-
-### 10.5 Build / deploy
-
-- **No code-splitting.** The whole bundle ships as a single JS file. Cost on cold load is the whole tool with all features enabled.
-- **No tests, no CI config.** A refactor without `npm run typecheck` is currently the only safety net.
-- **No SRI.** `index.html` now declares a baseline meta-CSP, but production hosts should still enforce the stronger response-header CSP and `X-Content-Type-Options: nosniff` listed in §9.3.
-
-### 10.6 Concurrency / determinism
-
-- **`g`-regex state discipline.** Library code creates fresh local `RegExp`s rather than sharing module-level `g` regexes across calls. Any new regex added that uses `g` MUST follow the same discipline.
-- **Race-safety effect cleanups** use `cancelled` flags; if a new effect reads from a concurrent render, the same pattern is required.
-
----
-
-## Appendix A — Types worth knowing
-
-From `src/types.ts`:
-
-- **`LoadedProject`** — the live state of the user's zip.
-- **`ImageDetection`** — one scanned image reference with status (`ok|missing|remote`), kind (`html|css|manifest`), type (`hero|logo|...`), and `riskReason`.
-- **`AppliedPatch`** — discriminated union: `replace | fit-style | remove | placeholder | manual-replace`. **Every variant carries enough pre/post state to be reverted** by `undoPatchById`.
-- **`LogoCandidate`** — per-role logo reference with unique id (`sourceFile::tag::attr::url#<context>`).
-- **`PreviewIndex`** — a `Map<htmlPath, topLevelPreviewBlobUrl>` plus sorted HTML paths and a primary entry.
-- **`ExportState`** — `'idle' | 'busy' | 'success' | 'error'` — drives the right-panel export UI.
-
-## Appendix B — How to extend safely
-
-When adding a new feature, follow these invariants to stay inside the architecture:
-
-1. **Add new logic to `src/lib/*`**, not into components. Components stay presentational.
-2. **Persist pre/post source text on every new `AppliedPatch` variant** so `undoStack.ts` remains the single undo primitive.
-3. **Mutate only `project.zip`.** Don't keep parallel file-system state — it desyncs on undo, preview, and export.
-4. **Use relative references for the source rewrite.** The export is consumed by browsers, not Node, so a `blob:` left in the patched file would break deploys.
-5. **Always surface risks.** `riskReason` on `ImageDetection` exists so the Broken Images panel and export report agree. Extend `classifyRiskReason` if you add a new risk class.
-6. **Add a History pill with a `data-testid`.** The History panel is the audit log; if the action isn't there it didn't happen.
-7. **If persistence format changes, bump `SCHEMA_VERSION`** in `idb.ts`. Old rows are dropped on read by design.
+1. Keep `project.zip` as the only mutable file source.
+2. Put source surgery in `src/lib`, not components.
+3. Record exact undo and diff state for every mutation.
+4. Never write preview/blob URLs into exportable source.
+5. Validate persisted schema additions and bump the schema/database version as
+   appropriate.
+6. Clean up object URLs, listeners, timers, worker requests, and abort handlers.
+7. Add regression tests before broadening HTML/CSS matching rules.
+8. Reassess both served and blob preview modes for every sandbox/CSP change.

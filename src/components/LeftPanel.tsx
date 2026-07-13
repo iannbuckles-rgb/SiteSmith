@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { SpIcon, FolderIcon, HistoryIcon, ImageIcon, PencilIcon } from './FileIcon';
 import type { FileNode, ImageDetection, LeftPanelMode, LoadedProject, LogoCandidate, LogoHelperConfig } from '../types';
 import { buildFileTree } from '../lib/fileTree';
-import { deleteProjectRecord, listProjects, renameProjectRecord, type Checkpoint, type SavedProject } from '../lib/idb';
+import { deleteProjectRecord, listProjects, renameProjectRecord, type CheckpointSummary, type SavedProjectSummary } from '../lib/idb';
 import { FileTree } from './FileTree';
 import { ProjectSummaryCard } from './ProjectSummary';
 import { UploadButton } from './UploadButton';
@@ -66,7 +66,7 @@ interface LeftPanelProps {
   onUndoAll: () => void;
   onResetSelectedImage: () => void;
   onResetProject: () => void;
-  checkpoints: Checkpoint[];
+  checkpoints: CheckpointSummary[];
   checkpointsLoading: boolean;
   checkpointBusyId: string | null;
   checkpointSaveBusy: boolean;
@@ -392,7 +392,7 @@ interface ProjectsPanelProps {
 }
 
 function ProjectsPanel({ active, onOpenProject, onRenamed, onDeleted }: ProjectsPanelProps) {
-  const [projects, setProjects] = useState<SavedProject[]>([]);
+  const [projects, setProjects] = useState<SavedProjectSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -414,7 +414,7 @@ function ProjectsPanel({ active, onOpenProject, onRenamed, onDeleted }: Projects
     void refresh();
   }, [active, refresh]);
 
-  const handleOpen = useCallback(async (project: SavedProject) => {
+  const handleOpen = useCallback(async (project: SavedProjectSummary) => {
     setBusyId(`open:${project.id}`);
     setError(null);
     try {
@@ -426,7 +426,7 @@ function ProjectsPanel({ active, onOpenProject, onRenamed, onDeleted }: Projects
     }
   }, [onOpenProject]);
 
-  const handleRename = useCallback(async (project: SavedProject) => {
+  const handleRename = useCallback(async (project: SavedProjectSummary) => {
     const nextName = window.prompt('Rename project', project.name);
     if (nextName === null) return;
     const trimmed = nextName.trim();
@@ -444,7 +444,7 @@ function ProjectsPanel({ active, onOpenProject, onRenamed, onDeleted }: Projects
     }
   }, [onRenamed, refresh]);
 
-  const handleDelete = useCallback(async (project: SavedProject) => {
+  const handleDelete = useCallback(async (project: SavedProjectSummary) => {
     if (!window.confirm(`Delete "${project.name}"?`)) return;
     setBusyId(`delete:${project.id}`);
     setError(null);

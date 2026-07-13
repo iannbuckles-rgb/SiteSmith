@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest';
 
 import { choosePrimaryHtml } from '../src/lib/previewService';
+import { isMessageFromPreviewFrame, previewSandboxPermissions } from '../src/lib/previewControls';
 import { augmentHtml, deriveSiteRoot, instrumentEditableMarkup, previewUrl, servedPreviewPath } from '../src/lib/previewServer';
+
+describe('preview message authentication', () => {
+  it('accepts only the currently mounted iframe window', () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    expect(isMessageFromPreviewFrame({ source: frame.contentWindow }, frame)).toBe(true);
+    expect(isMessageFromPreviewFrame({ source: window }, frame)).toBe(false);
+    expect(isMessageFromPreviewFrame({ source: frame.contentWindow }, null)).toBe(false);
+    frame.remove();
+  });
+
+  it('grants same-origin only to the service-worker preview path', () => {
+    expect(previewSandboxPermissions('/preview/project-1/index.html')).toContain('allow-same-origin');
+    expect(previewSandboxPermissions('blob:https://app.example/abc')).not.toContain('allow-same-origin');
+  });
+});
 
 describe('previewService.choosePrimaryHtml', () => {
   it('prefers a root index over nested route indexes', () => {

@@ -11,10 +11,12 @@ Everything happens locally in your browser — MockupSwap never uploads your pro
 - **Flexible onboarding** — drop a `.zip`, a whole project **folder**, or a handful of loose web files (`.html` / `.css` / `.js` / images). Folders and loose files are packaged into a zip in-browser, so nothing needs pre-zipping. On-device parsing via `JSZip`.
 - **Image detection** for HTML `<img>` tags, CSS `url(...)` background images, SVG `xlink:href`, manifest icons, and Apple touch / favicon links.
 - **Broken-image detection** flags assets that are missing from the zip, point at remote / Manus / CDN URLs, or use `blob:` schemes that won't export.
-- **Three left-panel modes**:
+- **Five left-panel modes**:
   - **Images** — every detected image reference, filterable, with thumbnails and a "broken" badge.
   - **Logos** — guided header / footer / favicon / apple-touch / manifest replacement flow.
   - **Manual replace** — text-based search-and-replace across the project for assets the detector didn't catch (e.g. `<source>`, asset hashes, dynamic `<meta>`).
+  - **History** — per-patch diffs, undo/reset controls, and named checkpoints.
+  - **Projects** — named browser-local project saves that can be reopened later.
 - **Per-image actions**:
   - **Replace** with a drag-and-drop image (PNG, JPG, WebP, SVG, GIF, AVIF, BMP, ICO).
   - **Fit & style** — generated inline-style or CSS-class block with `object-fit`, position, border-radius, optional overlay (vignette / gradient).
@@ -23,6 +25,9 @@ Everything happens locally in your browser — MockupSwap never uploads your pro
 - **Live preview via an in-browser virtual server.** A scoped **service worker** serves the project from real `/preview/<id>/…` URLs, so the browser resolves every reference natively — relative and root-relative paths, **ES-module `import` / dynamic `import()`**, `fetch()`, `new URL(x, import.meta.url)`, web workers, and wasm — with correct `Content-Type` headers. Built sites shipped under a subfolder (`…/dist/index.html`, `…/build/index.html`) are served relative to that web root, so the absolute `/assets/…` paths a bundler emits resolve correctly. This is what lets modern, bundled ("active") web projects render the same way they would on a local dev server, instead of only flat HTML/CSS. Served HTML gets a tiny injected runtime (an in-memory storage shim + a link-nav bridge). On first use the app runs a one-shot capability probe; browsers that can't run a worker-controlled iframe automatically fall back to the legacy in-iframe **blob pipeline** (flat HTML/CSS/images), so a preview always renders.
   - **Security note:** because a service worker can only control a same-origin client, the preview iframe runs same-origin with `sandbox="allow-scripts allow-same-origin …"` (top-navigation is still blocked). Preview this way only for projects you trust — a previewed page shares the app's origin. This is the standard trade-off for in-browser preview tools and is the price of rendering real apps correctly.
 - **Change history** panel with per-row **Undo**, plus global **Undo Last Change**, **Reset Selected Image**, and **Reset Project** buttons.
+- **Direct preview editor** for selecting source-backed text, images, links, form fields, and components; edit attributes, reorder/delete elements, or nudge visual position from the rendered page.
+- **Browser-local persistence** via IndexedDB: recover the active session after refresh, save named projects, and create named checkpoints. Quota failures are surfaced as persistent warnings.
+- **Responsive workspace and themes**: desktop columns, tablet inspector drawer, mobile pane switcher, and persisted light/dark mode.
 - **Export** repackages the (currently modified) zip on download, with a summary card showing zip size, files written, replaced / broken / removed / placeholder counts, and any remote refs still in the project.
 - **Change report** (`MOCKUPSWAP_CHANGES.md`) is appended to the exported zip so you can review what every patch did.
 - **Accessibility**: keyboard-navigable tabs, drop zones, and chips; `aria-live` on busy / error states; `aria-busy` on in-flight apply buttons.
@@ -31,7 +36,7 @@ Everything happens locally in your browser — MockupSwap never uploads your pro
 
 ## Run locally
 
-You need **Node.js 18+** and **npm**.
+You need **Node.js 20.19+** and **npm** (required by the test/jsdom toolchain).
 
 ```bash
 # from the project root
@@ -57,7 +62,7 @@ Everything is browser-side — there is no backend, no API key, no environment f
 
 - Click the upload area to pick file(s), use **Choose a folder instead** for a directory, **or** drag a `.zip`, a folder, or loose web files onto the drop zone.
 - Folders and loose files are zipped in-browser first; a single `.zip` is used as-is.
-- The app reads every file into memory and starts an **image scan**. The Images tab populates with detected references.
+- A worker retains the zip and performs archive-heavy work while the app scans relevant source files for image references. The Images tab populates with detected references.
 
 ### 2. Pick a detection
 
@@ -125,32 +130,30 @@ A summary card shows the zip size, file count, and a breakdown of replaced / bro
 
 ## Known limitations
 
-- **Local-only.** No server-side persistence — refreshing the page loses all patches. Re-upload the zip and re-apply if needed.
+- **Browser-local only.** Sessions, named projects, and checkpoints use IndexedDB on this device; there is no cloud sync, collaboration, or server backup. Export important work before clearing browser data.
 - **JS references aren't auto-*detected* for swapping.** The service-worker preview *renders* JavaScript correctly (imports, `fetch`, dynamic URLs), but the image **detector** still reads HTML and CSS statically — an asset whose path is built in JS (e.g. `import.meta.url + hash + ".png"`) won't appear in the Images list. Use the **Manual replace** tab to swap those.
 - **Preview shows one page at a time.** The entry HTML loads first; use the page dropdown or click links in the page to switch.
-- **No asset re-encoding.** Replacement files are stored as uploaded — no automatic WebP conversion, compression, or resizing.
-- **CSS is rewritten as inline `<style>` tags** for the Fit & style flow. Existing external `.css` files are not folded in — only new rules are appended.
+- **Limited asset re-encoding.** Optional WebP conversion supports eligible PNG/JPEG inputs; there is no resizing, AVIF output, or animation conversion.
+- **Fit & style is targeted source surgery.** HTML image styles and detected CSS rules are patched in place; it is not a visual stylesheet designer or full CSS parser.
 - **Cross-origin images** in the source zip are flagged as risky but not re-hosted. Whether they survive a deploy depends entirely on the destination.
 - **Remote URLs are not localized.** References to `https://...` stay as external URLs on export.
 - **Blob URLs in the source are not preserved** — they always fail at runtime, so MockupSwap marks them broken by default.
-- **No undo persistence.** Patches live in memory until you click Reset Project or refresh the page.
-- **No multi-file diff view** — the History panel shows metadata but not before/after source text.
+- **No project-level diff.** History shows per-patch and per-file before/after text, but there is no single whole-archive diff against the original zip.
+- **Trusted active previews only.** Service-worker previews run same-origin so modern modules and fetches work. Do not preview arbitrary hostile projects in the editor; a public untrusted-upload deployment needs a separate preview origin.
 
 ---
 
 ## Suggested future improvements
 
-- **Diff view** in the History panel — show the file's before/after text for each patch.
-- **Multi-step undo stack** — a real history so the user can step arbitrarily far back (right now it's one-shot or per-row).
-- **Asset re-encoding** — optional WebP / AVIF conversion on import with a size budget.
-- **Persistent project** — `IndexedDB` storage so refreshing the tab keeps patches and lets you resume work.
-- **Theme / dark-mode toggle** — the app is currently dark-only.
-- **Bulk replace** — replace every detection matching a path prefix in one click.
+- **Dedicated preview origin** for safely rendering arbitrary untrusted active projects.
+- **Archive expansion limits** for entry count, uncompressed bytes, individual source size, and compression ratio.
+- **Project-level diff** against the pristine upload, with file-by-file export review.
+- **AVIF/resizing pipeline** with explicit output dimensions and a user-set size budget.
+- **JavaScript asset detection** for literal imports, `new URL(..., import.meta.url)`, and common asset maps.
+- **Virtualized image lists** so projects with hundreds of detections can retain more than the current thumbnail cap.
 - **CSS variable extraction** — pull the Fit & style values into `:root` CSS variables so they can be tweaked in-browser.
 - **Inline image preview** of the pre-replacement vs post-replacement asset in the History panel.
 - **Drop-in ZIP picker** from the OS file dialog with a remembered last-folder (browser support permitting).
-- **Targeted HTML rewrites** — `<source srcset="...">` and dynamic `data-src` lazy-load attributes.
-- **External CSS scanning** — read `.css` files alongside HTML so background images declared in stylesheets are caught.
 
 ---
 

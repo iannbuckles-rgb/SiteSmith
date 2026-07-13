@@ -15,7 +15,7 @@ import {
   canReplace,
   isBroken,
 } from '../lib/assetReplacer';
-import { formatBytes } from '../lib/fileTypes';
+import { formatBytes, IMAGE_FILE_ACCEPT, isSupportedImageFile } from '../lib/fileTypes';
 import { readEditorStyleProperty, writeEditorStyleProperty } from '../lib/editorPatch';
 import { FitStylePanel } from './FitStylePanel';
 import type {
@@ -87,11 +87,6 @@ interface RightPanelProps {
   onExport: () => void;
   onExportAgain: () => void;
 }
-
-const ACCEPTED_IMAGE_MIMES = [
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'image/svg+xml', 'image/avif', 'image/bmp', 'image/x-icon',
-];
 
 export function RightPanel({
   selectedDetection, thumbnail, appliedPatch,
@@ -394,7 +389,7 @@ function EditorInspector({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={ACCEPTED_IMAGE_MIMES.join(',')}
+                accept={IMAGE_FILE_ACCEPT}
                 onChange={handleFileChange}
                 className="hidden"
                 data-testid="editor-image-file-input"
@@ -1313,7 +1308,7 @@ function ReplacementForm({
 
   const acceptFile = useCallback((file: File | undefined | null) => {
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
+    if (!isSupportedImageFile(file)) {
       // We don't surface the error here \u2014 the parent will receive the file
       // and decide. (Alerting now would feel intrusive.)
       return;
@@ -1326,7 +1321,7 @@ function ReplacementForm({
       <input
         ref={inputRef}
         type="file"
-        accept={ACCEPTED_IMAGE_MIMES.join(',')}
+        accept={IMAGE_FILE_ACCEPT}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
           acceptFile(e.target.files?.[0]);
           e.target.value = '';

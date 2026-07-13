@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent 
 
 import { isBroken } from '../lib/assetReplacer';
 import type { ImageDetection, ImageStatus, ImageType } from '../types';
-import { formatBytes } from '../lib/fileTypes';
+import { formatBytes, IMAGE_FILE_ACCEPT, isSupportedImageFile } from '../lib/fileTypes';
 
 /** Filter applied to the detected images list. The default 'all' shows
  *  every reference; 'broken' is the focused panel for the user's task. */
@@ -434,11 +434,6 @@ function displayablePath(rawUrl: string): string {
  * ------------------------------------------------------------------------*/
 
 const ALL_FOLDER = '__all__';
-const ACCEPTED_IMAGE_MIMES = [
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'image/svg+xml', 'image/avif', 'image/bmp', 'image/x-icon',
-];
-
 interface FolderScopeRowProps {
   buckets: FolderBucket[];
   active: string;
@@ -520,7 +515,7 @@ function BulkReplaceZone({
 
   const acceptFile = (file: File | undefined | null) => {
     if (!file) return;
-    if (!file.type.startsWith('image/')) return;
+    if (!isSupportedImageFile(file)) return;
     onPickBulkFile(file);
   };
 
@@ -533,7 +528,7 @@ function BulkReplaceZone({
       <input
         ref={inputRef}
         type="file"
-        accept={ACCEPTED_IMAGE_MIMES.join(',')}
+        accept={IMAGE_FILE_ACCEPT}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
           acceptFile(e.target.files?.[0]);
           e.target.value = '';

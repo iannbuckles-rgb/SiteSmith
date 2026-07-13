@@ -98,3 +98,24 @@ export interface PreviewHistoryState {
   pages: string[];
   index: number;
 }
+
+/** Accept editor/navigation messages only from the currently mounted preview
+ * frame. Shape validation alone is insufficient because any window holding a
+ * reference to the app could otherwise forge a `postMessage` edit request. */
+export function isMessageFromPreviewFrame(
+  event: Pick<MessageEvent, 'source'>,
+  frame: HTMLIFrameElement | null,
+): boolean {
+  return frame !== null && frame.contentWindow !== null && event.source === frame.contentWindow;
+}
+
+const PREVIEW_SANDBOX_BASE = 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox';
+
+/** The service-worker preview needs a same-origin client so native module and
+ * root-relative requests remain worker-controlled. The blob fallback was built
+ * to run at an opaque origin and must not receive the same-origin capability. */
+export function previewSandboxPermissions(src: string): string {
+  return src.startsWith('/preview/')
+    ? `${PREVIEW_SANDBOX_BASE} allow-same-origin`
+    : PREVIEW_SANDBOX_BASE;
+}

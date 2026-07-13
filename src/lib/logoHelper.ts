@@ -9,6 +9,7 @@ import type {
 } from '../types';
 import type { ZipArchiveLike } from './archiveTypes';
 import { applyReplacement, canReplace } from './assetReplacer';
+import { isSupportedImageFile } from './fileTypes';
 import { sanitizeFilename, uniqueAssetPath } from './filenameSanitizer';
 import { pathRelative } from './pathRelative';
 import { resolveAgainst } from './urlResolver';
@@ -326,7 +327,7 @@ export async function applyLogoHelper(
   file: File,
   config: LogoHelperConfig,
 ): Promise<LogoHelperApplyResult> {
-  if (!file.type.startsWith('image/')) {
+  if (!isSupportedImageFile(file)) {
     throw new Error(`"${file.name}" isn't an image. Only image files can be used as a logo.`);
   }
   if (candidates.length === 0) {
