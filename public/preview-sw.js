@@ -65,23 +65,13 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(serveFromCache(url.pathname));
     return;
   }
-  // Skip dev-server / tooling internals so hot-reload is never intercepted.
-  if (isToolingPath(url.pathname)) return;
-
   // Possibly a root-relative asset from a preview page. `resolveRequest` maps
   // it into the project when the requester is a preview client, and otherwise
-  // passes the request straight through to the network.
+  // passes the request straight through to the network. Client-aware routing
+  // is important for `/src/*`: it is Vite tooling for the editor itself, but it
+  // can also be a legitimate root-relative website asset inside the iframe.
   event.respondWith(resolveRequest(event, url));
 });
-
-function isToolingPath(pathname) {
-  return (
-    pathname.startsWith('/@') ||
-    pathname.startsWith('/src/') ||
-    pathname.startsWith('/node_modules/') ||
-    pathname === '/preview-sw.js'
-  );
-}
 
 async function resolveRequest(event, url) {
   try {

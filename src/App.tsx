@@ -40,7 +40,7 @@ import { detectImages } from './lib/imageDetector';
 import { applyLogoHelper } from './lib/logoHelper';
 import { applyManualReplace, undoManualReplace } from './lib/manualReplace';
 import { undoPatchById } from './lib/undoStack';
-import { type PreviewIndex } from './lib/previewService';
+import { type PreviewDiagnostic, type PreviewIndex } from './lib/previewService';
 import { buildPreview } from './lib/previewServer';
 import { getProjectWorkerClient } from './lib/projectWorkerClient';
 import { resolveAgainst } from './lib/urlResolver';
@@ -75,6 +75,7 @@ const TEXT_EDIT_MESSAGE_TYPE = 'mockswap:text-edit';
 const SELECT_MESSAGE_TYPE = 'mockswap:select-element';
 const REORDER_MESSAGE_TYPE = 'mockswap:reorder-element';
 const NUDGE_MESSAGE_TYPE = 'mockswap:nudge-element';
+const PREVIEW_STATUS_MESSAGE_TYPE = 'mockswap:preview-status';
 
 /** Save-to-IndexedDB debounce window. Big zips take ~60–80 ms to blob; we
  *  batch rapid mutations (chip clicks, typed searches) so 1 s is safe. */
@@ -150,6 +151,7 @@ export default function App() {
   const [previewKey, setPreviewKey] = useState(0);
   const [currentPagePath, setCurrentPagePath] = useState<string>('');
   const [previewRevision, setPreviewRevision] = useState(0);
+  const [previewRuntimeDiagnostics, setPreviewRuntimeDiagnostics] = useState<PreviewDiagnostic[]>([]);
 
   // Preview-toolbar state. Viewport / zoom are user-pinned preferences
   // that survive across edits; fullscreen is a transient overlay mode.
@@ -233,6 +235,7 @@ export default function App() {
   const [checkpointRestoreTarget, setCheckpointRestoreTarget] = useState<Checkpoint | null>(null);
   const saveFailureToastShownRef = useRef(false);
   const saveFailureToastIdRef = useRef<string | null>(null);
+  const onboardingErrorToastIdRef = useRef<string | null>(null);
   const sessionSaveGenerationRef = useRef(0);
   const editorNudgeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const patchesByKeyRef = useRef<Map<string, AppliedPatch>>(new Map());
@@ -551,6 +554,11 @@ export default function App() {
     setBulkPendingFile(null);
     setBulkConfirm(null);
     setRestoreBanner(null);
+    setPreviewRuntimeDiagnostics([]);
+    if (onboardingErrorToastIdRef.current) {
+      dismissToast(onboardingErrorToastIdRef.current);
+      onboardingErrorToastIdRef.current = null;
+    }
     if (file.size > LARGE_ZIP_WARNING_BYTES) {
       pushToast({
         kind: 'warning',
@@ -598,6 +606,12 @@ export default function App() {
       if (isAbortError(err) || run.controller.signal.aborted || activeOnboardingRef.current?.id !== run.id) return;
       const message = err instanceof Error ? err.message : 'Failed to read zip file.';
       setError(message);
+      onboardingErrorToastIdRef.current = pushToast({
+        kind: 'error',
+        title: 'Website onboarding failed',
+        detail: message,
+        autoDismiss: false,
+      });
       if (!project) {
         setProject(null);
         setOriginalFile(null);
@@ -616,7 +630,7 @@ export default function App() {
         setBusyPhase(IDLE_PHASE);
       }
     }
-  }, [beginOnboardingRun, clearOnboardingRun, ensureOnboardingActive, project, pushToast]);
+  }, [beginOnboardingRun, clearOnboardingRun, dismissToast, ensureOnboardingActive, project, pushToast]);
 
   const handleUploadNewProject = useCallback((file: File) => {
     updateProjectRecordIdentity(null, null);
@@ -645,6 +659,11 @@ export default function App() {
     setLogoScanning(true);
     setBusyPhase({ kind: 'detecting', startedAt: Date.now() });
     setError(null);
+    setPreviewRuntimeDiagnostics([]);
+    if (onboardingErrorToastIdRef.current) {
+      dismissToast(onboardingErrorToastIdRef.current);
+      onboardingErrorToastIdRef.current = null;
+    }
     try {
       const fakeFile = blobToFileShim(blob, priorMeta.fileName);
       const parsed = await client.parseProject(fakeFile, {
@@ -694,7 +713,14 @@ export default function App() {
     } catch (err) {
       if (parsedProjectId) void client.disposeProject(parsedProjectId);
       if (isAbortError(err) || run.controller.signal.aborted || activeOnboardingRef.current?.id !== run.id) return;
-      setError(err instanceof Error ? err.message : 'Failed to restore session.');
+      const message = err instanceof Error ? err.message : 'Failed to restore session.';
+      setError(message);
+      onboardingErrorToastIdRef.current = pushToast({
+        kind: 'error',
+        title: 'Session restore failed',
+        detail: message,
+        autoDismiss: false,
+      });
     } finally {
       if (clearOnboardingRun(run)) {
         setRestoring(false);
@@ -703,7 +729,7 @@ export default function App() {
         setBusyPhase(IDLE_PHASE);
       }
     }
-  }, [beginOnboardingRun, clearOnboardingRun, ensureOnboardingActive, replacePatchesByKey]);
+  }, [beginOnboardingRun, clearOnboardingRun, dismissToast, ensureOnboardingActive, pushToast, replacePatchesByKey]);
 
   const handleRestoreSession = useCallback(() => {
     if (!restoreBanner) return;
@@ -1186,6 +1212,7 @@ export default function App() {
     currentPagePathRef.current = path;
     setEditorSelection(null);
     setEditorError(null);
+    setPreviewRuntimeDiagnostics([]);
     setCurrentPagePath(path);
     setPreviewHistory((prev) => {
       const curIdx = prev.index;
@@ -1210,6 +1237,7 @@ export default function App() {
     const target = cur.pages[newIndex];
     if (!target) return;
     currentPagePathRef.current = target;
+    setPreviewRuntimeDiagnostics([]);
     setCurrentPagePath(target);
     setPreviewHistory({ pages: cur.pages, index: newIndex });
     setPreviewKey((k) => k + 1);
@@ -1222,6 +1250,7 @@ export default function App() {
     const target = cur.pages[newIndex];
     if (!target) return;
     currentPagePathRef.current = target;
+    setPreviewRuntimeDiagnostics([]);
     setCurrentPagePath(target);
     setPreviewHistory({ pages: cur.pages, index: newIndex });
     setPreviewKey((k) => k + 1);
@@ -1292,6 +1321,7 @@ export default function App() {
   }, []);
 
   const handleRefreshPreview = useCallback(() => {
+    setPreviewRuntimeDiagnostics([]);
     setPreviewKey((k) => k + 1);
   }, []);
 
@@ -2260,6 +2290,10 @@ export default function App() {
   // ------------------------------------------------------------------------
 
   const handleReload = useCallback(() => {
+    if (onboardingErrorToastIdRef.current) {
+      dismissToast(onboardingErrorToastIdRef.current);
+      onboardingErrorToastIdRef.current = null;
+    }
     activeOnboardingRef.current?.controller.abort();
     activeOnboardingRef.current = null;
     releaseWorkerProject();
@@ -2279,6 +2313,7 @@ export default function App() {
     setLogoCandidates([]);
     setThumbnails(new Map());
     setPreview(null);
+    setPreviewRuntimeDiagnostics([]);
     setCurrentPagePath('');
     setExpanded(new Set());
     setError(null);
@@ -2325,7 +2360,7 @@ export default function App() {
     restoreMutatedZipArrayRef.current = null;
     snapshotBlobCacheRef.current = null;
     void clearSession();
-  }, [releaseWorkerProject, updateProjectRecordIdentity, replacePatchesByKey]);
+  }, [dismissToast, releaseWorkerProject, updateProjectRecordIdentity, replacePatchesByKey]);
 
   // ------------------------------------------------------------------------
   // Persistence effects (debounced saveSession + on-boot loadSession)
@@ -2430,7 +2465,7 @@ export default function App() {
     }
     setPreviewBuilding(true);
     setPreview(null);
-    setError(null);
+    setPreviewRuntimeDiagnostics([]);
     // Don't reset currentPagePath eagerly — the awaited rebuild
     // below reconciliates whether the previously-active page still
     // exists in the regenerated index and, if it does, preserves
@@ -2470,7 +2505,10 @@ export default function App() {
       } catch (err) {
         if (!cancelled) {
           setPreview(null);
-          setError(`Preview could not be built: ${err instanceof Error ? err.message : String(err)}`);
+          setPreviewRuntimeDiagnostics([{
+            level: 'error',
+            message: `Preview could not be built: ${err instanceof Error ? err.message : String(err)}`,
+          }]);
         }
       } finally {
         if (!cancelled) setPreviewBuilding(false);
@@ -2551,6 +2589,21 @@ export default function App() {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
       const type = (data as { type?: string }).type;
+      if (type === PREVIEW_STATUS_MESSAGE_TYPE) {
+        const payload = data as { level?: unknown; message?: unknown; detail?: unknown; sourceFile?: unknown };
+        if (payload.level !== 'error' || typeof payload.message !== 'string') return;
+        const source = typeof payload.sourceFile === 'string' ? payload.sourceFile : currentPagePathRef.current;
+        const detail = typeof payload.detail === 'string' ? payload.detail : '';
+        const diagnostic: PreviewDiagnostic = {
+          level: 'error',
+          message: formatPreviewRuntimeError(payload.message, detail, source),
+        };
+        setPreviewRuntimeDiagnostics((current) => {
+          if (current.some((item) => item.message === diagnostic.message)) return current;
+          return [...current, diagnostic].slice(-8);
+        });
+        return;
+      }
       if (type === SELECT_MESSAGE_TYPE) {
         const payload = data as Partial<EditorSelection>;
         if (
@@ -2695,7 +2748,7 @@ export default function App() {
 
   return (
     <div
-      className="theme-app-root flex h-screen w-full max-w-full flex-col overflow-hidden bg-zinc-950 text-zinc-100"
+      className="theme-app-root flex h-dvh min-h-0 w-full max-w-full flex-col overflow-hidden bg-zinc-950 text-zinc-100"
       data-theme={theme}
       data-testid="app-root"
     >
@@ -2817,6 +2870,7 @@ export default function App() {
               onChangeMode={handleChangePreviewMode}
               clearSelectionSignal={editorClearSelectionSignal}
               editCount={patchesByKey.size}
+              runtimeDiagnostics={previewRuntimeDiagnostics}
             />
           </ErrorBoundary>
         )}
@@ -3195,6 +3249,13 @@ function dirnameOf(path: string): string {
   if (idx === -1) return '(root)';
   // Keep trailing slash so distinct roots compare unequal under Set dedup.
   return path.slice(0, idx + 1);
+}
+
+function formatPreviewRuntimeError(message: string, detail: string, sourceFile: string): string {
+  const cleanMessage = message.trim().slice(0, 300) || 'Unknown preview runtime error';
+  const cleanDetail = detail.trim().replace(/\s+/g, ' ').slice(0, 500);
+  const source = sourceFile.trim() || 'preview';
+  return `${source}: ${cleanMessage}${cleanDetail && cleanDetail !== cleanMessage ? ` — ${cleanDetail}` : ''}`;
 }
 
 function parseLargeZipThreshold(raw: unknown): number {

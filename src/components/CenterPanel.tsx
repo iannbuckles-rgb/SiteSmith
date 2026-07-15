@@ -45,7 +45,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { LoadedProject } from '../types';
-import type { PreviewIndex } from '../lib/previewService';
+import type { PreviewDiagnostic, PreviewIndex } from '../lib/previewService';
 import {
   previewSandboxPermissions,
   VIEWPORT_DIMENSIONS,
@@ -85,6 +85,7 @@ interface CenterPanelProps {
    *  small violet pill in the toolbar so the user can tell at a
    *  glance when their preview reflects work. */
   editCount: number;
+  runtimeDiagnostics: PreviewDiagnostic[];
 }
 
 export function CenterPanel({
@@ -99,6 +100,7 @@ export function CenterPanel({
   mode, onChangeMode,
   clearSelectionSignal,
   editCount,
+  runtimeDiagnostics,
 }: CenterPanelProps) {
   // ESC closes fullscreen overlay — a universal expectation for
   // maximised views. The handler only mounts when the overlay is
@@ -154,6 +156,11 @@ export function CenterPanel({
     </div>
   );
 
+  const diagnostics = mergeDiagnostics(preview?.diagnostics ?? [], runtimeDiagnostics);
+  const diagnosticBanner = diagnostics.length > 0 ? (
+    <PreviewDiagnostics diagnostics={diagnostics} onRetry={onRefresh} />
+  ) : null;
+
   // Fullscreen takes the surface out of the 3-column grid via a
   // portal: the panel renders into document.body so the rest of the
   // editor (sidebars, modal, etc.) naturally falls behind the
@@ -166,6 +173,7 @@ export function CenterPanel({
         data-testid="preview-panel-fullscreen"
       >
         {toolbar}
+        {diagnosticBanner}
         {stage}
       </div>,
       document.body,
@@ -178,8 +186,69 @@ export function CenterPanel({
       data-testid="preview-panel"
     >
       {toolbar}
+      {diagnosticBanner}
       {stage}
     </main>
+  );
+}
+
+function mergeDiagnostics(
+  buildDiagnostics: PreviewDiagnostic[],
+  runtimeDiagnostics: PreviewDiagnostic[],
+): PreviewDiagnostic[] {
+  const seen = new Set<string>();
+  const merged: PreviewDiagnostic[] = [];
+  for (const item of [...buildDiagnostics, ...runtimeDiagnostics]) {
+    const key = `${item.level}:${item.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
+function PreviewDiagnostics({
+  diagnostics,
+  onRetry,
+}: {
+  diagnostics: PreviewDiagnostic[];
+  onRetry: () => void;
+}) {
+  const hasError = diagnostics.some((item) => item.level === 'error');
+  return (
+    <section
+      role={hasError ? 'alert' : 'status'}
+      aria-live={hasError ? 'assertive' : 'polite'}
+      className={`shrink-0 border-b px-3 py-2 text-xs ${
+        hasError
+          ? 'border-rose-700/60 bg-rose-950/70 text-rose-100'
+          : 'border-amber-700/50 bg-amber-950/60 text-amber-100'
+      }`}
+      data-testid="preview-diagnostics"
+    >
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold">
+            {hasError ? 'The website preview reported an error' : 'Preview compatibility notice'}
+          </p>
+          <ul className="mt-1 max-h-24 space-y-1 overflow-y-auto pr-2 text-[11px] leading-relaxed opacity-90">
+            {diagnostics.map((item, index) => (
+              <li key={`${item.level}:${item.message}:${index}`} className="break-words">
+                {item.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="shrink-0 rounded-md border border-current/30 px-2 py-1 text-[11px] font-medium transition-colors hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-current"
+          data-testid="preview-diagnostics-retry"
+        >
+          Reload preview
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -292,7 +361,7 @@ function PreviewToolbar({
             <select
               value={currentPagePath}
               onChange={(event) => onSelectPage(event.target.value)}
-              className="max-w-[260px] truncate rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-100 transition-colors hover:border-zinc-500 focus:border-violet-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
+              className="w-[min(260px,55vw)] min-w-0 max-w-full truncate rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-[11px] text-zinc-100 transition-colors hover:border-zinc-500 focus:border-violet-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
               title={currentPagePath}
               data-testid="preview-page-select"
             >

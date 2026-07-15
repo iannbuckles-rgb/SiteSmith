@@ -195,7 +195,7 @@ export function RightPanel({
         )}
       </div>
 
-      <div className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
+      <div className="max-h-[45dvh] shrink-0 overflow-y-auto border-t border-zinc-800 bg-zinc-950 p-3">
         <ExportSection
           state={exportState}
           summary={exportSummary}

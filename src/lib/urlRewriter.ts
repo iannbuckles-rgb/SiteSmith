@@ -182,6 +182,11 @@ function injectNavScript(html: string, sourcePath: string): string {
   const body = [
     "(function(){",
     "var __src=" + srcLiteral + ";",
+    "var __statusType='mockswap:preview-status';",
+    "function __report(level,message,detail){try{window.parent.postMessage({type:__statusType,level:level,message:String(message||'Preview error'),detail:detail?String(detail):undefined,sourceFile:__src},'*');}catch(_){}}",
+    "window.addEventListener('error',function(e){var t=e.target;if(t&&t!==window){var tag=(t.tagName||'resource').toLowerCase();var url=t.currentSrc||t.src||t.href||(t.getAttribute&&t.getAttribute('src'))||(t.getAttribute&&t.getAttribute('href'))||'unknown URL';__report('error','Failed to load '+tag+' resource.',url);return;}var detail=e.filename?[e.filename,e.lineno||0,e.colno||0].join(':'):undefined;__report('error',e.message||'Unhandled preview error',detail);},true);",
+    "window.addEventListener('unhandledrejection',function(e){var r=e.reason;__report('error',r&&r.message?r.message:String(r||'Unhandled promise rejection'),r&&r.stack?r.stack:undefined);});",
+    "document.addEventListener('DOMContentLoaded',function(){__report('ready','Preview document loaded');},{once:true});",
     "document.addEventListener('click',function(e){",
     "var t=e.target;",
     "while(t&&t.nodeType!==9&&t.nodeName!=='A'){t=t.parentNode;}",

@@ -17,6 +17,13 @@ export interface PreviewIndex {
   htmlPaths: string[];
   primaryPath: string;
   primaryUrl: string;
+  mode: 'served' | 'compatibility';
+  diagnostics: PreviewDiagnostic[];
+}
+
+export interface PreviewDiagnostic {
+  level: 'warning' | 'error';
+  message: string;
 }
 
 /** MIME types used when wrapping rewritten text blobs. */
@@ -53,6 +60,7 @@ export async function buildPreviewIndex(
 ): Promise<PreviewIndex> {
   const urls = new Map<string, string>();
   const htmlPaths: string[] = [];
+  const diagnostics: PreviewDiagnostic[] = [];
   const assetTokens = new Map<string, string>();
   const assetPayloads: SandboxAssetPayload[] = [];
 
@@ -96,8 +104,11 @@ export async function buildPreviewIndex(
           text: false,
         });
       }
-    } catch {
-      // Skip unreadable / binary-misclassified entries.
+    } catch (error) {
+      diagnostics.push({
+        level: 'warning',
+        message: `Preview skipped unreadable file "${entry.path}": ${errorMessage(error)}`,
+      });
     }
   }
 
@@ -117,8 +128,11 @@ export async function buildPreviewIndex(
       const sandboxedDocument = buildSandboxedDocument(content, assetPayloads);
       const blob = new Blob([sandboxedDocument], { type: TEXT_MIMES.html });
       urls.set(entry.path, URL.createObjectURL(blob));
-    } catch {
-      // Skip unreadable entries silently.
+    } catch (error) {
+      diagnostics.push({
+        level: 'error',
+        message: `Preview could not read page "${entry.path}": ${errorMessage(error)}`,
+      });
     }
   }
 
@@ -126,7 +140,14 @@ export async function buildPreviewIndex(
   const primaryPath = choosePrimaryHtml(htmlPaths);
   const primaryUrl = primaryPath ? urls.get(primaryPath) ?? '' : '';
 
-  return { urls, htmlPaths, primaryPath, primaryUrl };
+  return {
+    urls,
+    htmlPaths,
+    primaryPath,
+    primaryUrl,
+    mode: 'compatibility',
+    diagnostics,
+  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -134,19 +155,22 @@ export async function buildPreviewIndex(
  * -------------------------------------------------------------------------*/
 
 /**
- * Pick the entry HTML file. Prefer the deploy root (`index.html`), then common
- * build-output roots (`dist/index.html`, `build/index.html`, `out/index.html`),
- * then the shallowest nested index. That keeps route pages like
- * `about/index.html` from becoming the preview's active website entry.
+ * Pick the entry HTML file. Prefer a deployable build output (`dist`, `build`,
+ * or `out`) over a source-root `index.html`: Vite and similar projects keep a
+ * development entry at the root that points at uncompiled TSX/Vue/Svelte
+ * sources, while the browser-ready website lives under the build directory.
+ * Falling back to the root entry still handles ordinary static sites.
  */
 export function choosePrimaryHtml(htmlPaths: string[]): string {
   if (htmlPaths.length === 0) return '';
   const sorted = [...htmlPaths].sort((a, b) => a.localeCompare(b));
+  const buildEntry = sorted
+    .filter(isBuildOutputEntry)
+    .sort((a, b) => buildEntryRank(a) - buildEntryRank(b) || segmentCount(a) - segmentCount(b) || a.localeCompare(b))[0];
+  if (buildEntry) return buildEntry;
+
   const rootIndex = sorted.find((p) => isRootIndexHtml(p));
   if (rootIndex) return rootIndex;
-
-  const buildEntry = sorted.find((p) => isCommonBuildEntry(p));
-  if (buildEntry) return buildEntry;
 
   const indexes = sorted.filter(isIndexHtml);
   if (indexes.length > 0) {
@@ -166,7 +190,7 @@ function isRootIndexHtml(path: string): boolean {
   return !path.includes('/') && isIndexHtml(path);
 }
 
-function isCommonBuildEntry(path: string): boolean {
+export function isBuildOutputEntry(path: string): boolean {
   if (!isIndexHtml(path)) return false;
   const segments = path.split('/');
   if (segments.length < 2) return false;
@@ -174,8 +198,20 @@ function isCommonBuildEntry(path: string): boolean {
   return dir === 'dist' || dir === 'build' || dir === 'out';
 }
 
+function buildEntryRank(path: string): number {
+  const segments = path.split('/');
+  const dir = segments[segments.length - 2]?.toLowerCase();
+  if (dir === 'dist') return 0;
+  if (dir === 'build') return 1;
+  return 2;
+}
+
 function segmentCount(path: string): number {
   return path.split('/').length;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildSandboxedDocument(html: string, assets: SandboxAssetPayload[]): string {

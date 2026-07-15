@@ -29,8 +29,9 @@ describe('previewService.choosePrimaryHtml', () => {
     ])).toBe('index.html');
   });
 
-  it('prefers common built-site entries when no root index exists', () => {
+  it('prefers a browser-ready build entry over an uncompiled root entry', () => {
     expect(choosePrimaryHtml([
+      'index.html',
       'RadAir/src/demo.html',
       'RadAir/dist/about/index.html',
       'RadAir/dist/index.html',
@@ -99,6 +100,15 @@ describe('previewServer.augmentHtml', () => {
     expect(out).toContain('sessionStorage');
     expect(out).toContain('mockswap:navigate');
     expect(out).toContain('"a/b.html"');
+  });
+
+  it('reports resource, runtime, promise, and ready events to the parent app', () => {
+    const out = augmentHtml('<head></head>', 'dist/index.html');
+    expect(out).toContain('mockswap:preview-status');
+    expect(out).toContain('Failed to load ');
+    expect(out).toContain('unhandledrejection');
+    expect(out).toContain('Preview document loaded');
+    expect(out).toContain('sourceFile:__src');
   });
 
   it('includes the direct text editing bridge', () => {

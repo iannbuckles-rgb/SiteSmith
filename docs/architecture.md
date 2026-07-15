@@ -141,12 +141,22 @@ silently overwrite newer tracked work.
 The preferred path caches project responses under `/preview/<projectId>/...`.
 `public/preview-sw.js` serves them with real MIME types and maps root-relative
 requests back to the requesting preview client's project. Built projects under
-`dist/`, `build/`, or similar roots therefore retain native module imports,
-dynamic imports, `fetch`, workers, wasm, and root-relative assets.
+`dist/`, `build/`, or `out/` take precedence over source-root development
+entries and are cached as an isolated deploy root. Uncompiled sources outside
+that build directory therefore cannot collide with its `index.html` or assets.
+Native module imports, dynamic imports, `fetch`, workers, wasm, and
+root-relative assets remain inside the requesting preview client's project;
+tooling-looking paths such as `/src/*` are routed by client identity rather than
+being globally exempted from the worker.
 
 HTML is augmented with a runtime that provides navigation bridging and editor
-selection/edit/reorder/nudge messages. The parent accepts those messages only
-when `event.source` is the current iframe window, then validates payload shape.
+selection/edit/reorder/nudge messages. It also reports failed resources,
+uncaught errors, unhandled promise rejections, and document readiness. The
+parent accepts those messages only when `event.source` is the current iframe
+window, validates payload shape, deduplicates failures, and renders them above
+the canvas. Archive-read/build diagnostics and compatibility fallback reasons
+use the same visible surface; onboarding/restore failures additionally create a
+persistent global error notification.
 
 The service-worker iframe requires both `allow-scripts` and `allow-same-origin`
 so the worker controls its requests. Consequently, active preview code is
@@ -187,6 +197,11 @@ store shape still requires IndexedDB to materialize full rows before stripping.
 - desktop: project, preview, and inspector columns;
 - tablet: project + preview with inspector drawer;
 - mobile: one active pane selected by a segmented control.
+
+The app root uses the dynamic viewport height. Oversized device previews anchor
+at a reachable scroll origin and center only when space permits; inspector
+export summaries have their own bounded scroll region so short viewports do not
+clip actions.
 
 Dialogs use `DialogShell` for initial focus, focus trapping, Escape dismissal,
 and focus restoration. App and preview have independent error boundaries.

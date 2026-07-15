@@ -83,6 +83,8 @@ describe('urlRewriter', () => {
     const twice = rewriteHtml(once, 'index.html', () => undefined);
 
     expect(twice.match(/data-mockswap-nav/g)).toHaveLength(1);
+    expect(once).toContain('mockswap:preview-status');
+    expect(once).toContain('unhandledrejection');
   });
 
   it('escapes source paths so injected script literals cannot break out', () => {

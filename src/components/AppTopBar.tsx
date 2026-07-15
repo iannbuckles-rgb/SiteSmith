@@ -44,12 +44,12 @@ export function AppTopBar({
 
       <div className="ml-auto flex max-w-[62vw] min-w-0 items-center justify-end gap-2 text-[11px] text-zinc-500">
         {project ? (
-          <span className="min-w-0 max-w-full truncate rounded-full bg-zinc-800 px-2 py-0.5 text-zinc-300">{project.fileName}</span>
+          <span className="hidden min-w-0 max-w-full truncate rounded-full bg-zinc-800 px-2 py-0.5 text-zinc-300 sm:inline">{project.fileName}</span>
         ) : (
           <span className="hidden shrink-0 rounded-full bg-zinc-800 px-2 py-0.5 sm:inline">No project</span>
         )}
         {project && saveAtRisk && (
-          <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-950/60 px-2 py-0.5 font-medium text-amber-200">Save at risk</span>
+          <span className="hidden shrink-0 rounded-full border border-amber-500/40 bg-amber-950/60 px-2 py-0.5 font-medium text-amber-200 sm:inline">Save at risk</span>
         )}
         <TopBarProgress phase={progress} onCancel={progress.kind === 'detecting' ? onCancelOnboarding : undefined} />
         {project && (

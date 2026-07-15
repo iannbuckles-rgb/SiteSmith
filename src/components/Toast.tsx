@@ -12,6 +12,7 @@
  *     success  · emerald
  *     info     · zinc
  *     warning  · amber
+ *     error    · rose
  * - Title (medium weight). Optional detail underneath in 11px.
  * - 12px dismiss button on the right. Click → 200ms fade-out then drop.
  *
@@ -25,7 +26,7 @@
 
 import { useState } from 'react';
 
-export type ToastKind = 'success' | 'info' | 'warning';
+export type ToastKind = 'success' | 'info' | 'warning' | 'error';
 
 export interface ToastData {
   id: string;
@@ -52,12 +53,14 @@ const KIND_PANEL_CLASS: Record<ToastKind, string> = {
   success: 'border-emerald-700/50 bg-emerald-950/60 text-emerald-100',
   info: 'border-zinc-700 bg-zinc-900 text-zinc-100',
   warning: 'border-amber-700/50 bg-amber-950/60 text-amber-100',
+  error: 'border-rose-700/60 bg-rose-950/70 text-rose-100',
 };
 
 const KIND_ACCENT_CLASS: Record<ToastKind, string> = {
   success: 'bg-emerald-400',
   info: 'bg-zinc-400',
   warning: 'bg-amber-400',
+  error: 'bg-rose-400',
 };
 
 export function Toast({ toast, onDismiss }: ToastProps) {
@@ -78,8 +81,8 @@ export function Toast({ toast, onDismiss }: ToastProps) {
 
   return (
     <div
-      role="status"
-      aria-live="polite"
+      role={toast.kind === 'error' ? 'alert' : 'status'}
+      aria-live={toast.kind === 'error' ? 'assertive' : 'polite'}
       data-testid={`toast-${toast.kind}`}
       className={[
         'flex w-80 max-w-[calc(100vw-2rem)] items-start gap-2 rounded-lg border px-3 py-2 text-xs shadow-lg backdrop-blur',

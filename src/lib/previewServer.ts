@@ -19,7 +19,13 @@
 import type { LoadedProject, ZipEntryMeta } from '../types';
 import type { ZipArchiveLike } from './archiveTypes';
 import { guessMimeType } from './mime';
-import { buildPreviewIndex, choosePrimaryHtml, type PreviewIndex } from './previewService';
+import {
+  buildPreviewIndex,
+  choosePrimaryHtml,
+  isBuildOutputEntry,
+  type PreviewDiagnostic,
+  type PreviewIndex,
+} from './previewService';
 import { WorkerZipArchive } from './workerZipArchive';
 
 const CACHE_NAME = 'mockswap-preview';
@@ -39,6 +45,7 @@ const REORDER_MESSAGE_TYPE = 'mockswap:reorder-element';
 const NUDGE_MESSAGE_TYPE = 'mockswap:nudge-element';
 const SET_EDIT_MODE_MESSAGE_TYPE = 'mockswap:set-edit-mode';
 const CLEAR_SELECTION_MESSAGE_TYPE = 'mockswap:clear-selection';
+const PREVIEW_STATUS_MESSAGE_TYPE = 'mockswap:preview-status';
 
 /** True when the Service Worker preview server can run in this context. */
 export function previewServerSupported(): boolean {
@@ -175,16 +182,27 @@ export async function buildPreview(
 ): Promise<PreviewIndex> {
   const zip = project.zip;
   const projectId = zip instanceof WorkerZipArchive ? zip.projectId : null;
+  let compatibilityReason: string | null = null;
 
   if (projectId && previewServerSupported()) {
     try {
       const reg = await ensureRegistered();
       if (reg) return await buildServedPreview(projectId, zip, entries);
-    } catch {
-      // fall through to the blob pipeline
+      compatibilityReason = 'The browser did not activate the local preview server.';
+    } catch (error) {
+      compatibilityReason = `The local preview server failed: ${errorMessage(error)}`;
     }
+  } else if (projectId) {
+    compatibilityReason = 'This browser context does not support the local preview server.';
   }
-  return buildPreviewIndex(zip, entries);
+  const fallback = await buildPreviewIndex(zip, entries);
+  if (compatibilityReason) {
+    fallback.diagnostics.unshift({
+      level: 'warning',
+      message: `${compatibilityReason} Using limited compatibility mode; module imports, workers, and root-relative runtime requests may not render.`,
+    });
+  }
+  return fallback;
 }
 
 /* ---------------------------------------------------------------------------
@@ -201,21 +219,41 @@ async function buildServedPreview(
   // renamed project never serves ghost files from a previous upload.
   await Promise.all((await cache.keys()).map((req) => cache.delete(req)));
 
-  const htmlPaths = entries
+  const allHtmlPaths = entries
     .filter((e) => !e.isDirectory && e.category === 'html')
     .map((e) => e.path)
     .sort((a, b) => a.localeCompare(b));
 
-  const primaryPath = choosePrimaryHtml(htmlPaths);
+  const primaryPath = choosePrimaryHtml(allHtmlPaths);
   // A built site (…/dist/index.html, …/build/index.html) is authored to deploy
   // at a web root, so its assets use root-relative paths like `/assets/app.js`.
   // Serve everything relative to that root — the entry HTML's directory — so
   // those paths resolve instead of 404ing one level too high.
   const siteRoot = deriveSiteRoot(primaryPath);
-  for (const entry of entries) {
+  // When a project contains both development sources and a browser-ready
+  // build, treat the build directory as the complete deployed website. This
+  // prevents root source files from overwriting identically named `dist/`
+  // assets after their paths are rebased to the preview web root.
+  const buildRoot = isBuildOutputEntry(primaryPath) ? siteRoot : '';
+  const previewEntries = buildRoot
+    ? entries.filter((entry) => entry.isDirectory || entry.path.startsWith(buildRoot))
+    : entries;
+  const htmlPaths = buildRoot
+    ? allHtmlPaths.filter((path) => path.startsWith(buildRoot))
+    : allHtmlPaths;
+  const diagnostics: PreviewDiagnostic[] = [];
+  const cachedPaths = new Set<string>();
+
+  for (const entry of previewEntries) {
     if (entry.isDirectory) continue;
     const file = zip.file(entry.path);
-    if (!file) continue;
+    if (!file) {
+      diagnostics.push({
+        level: previewDiagnosticLevel(entry),
+        message: `Preview could not find archived file "${entry.path}".`,
+      });
+      continue;
+    }
 
     const key = previewUrl(projectId, servedPreviewPath(entry.path, siteRoot));
     try {
@@ -230,16 +268,42 @@ async function buildServedPreview(
           ?? (entry.category === 'css' ? 'text/css;charset=utf-8' : 'application/octet-stream');
         await cache.put(key, new Response(blob, { headers: previewHeaders(mime) }));
       }
-    } catch {
-      // Skip unreadable entries; the preview degrades gracefully.
+      cachedPaths.add(entry.path);
+    } catch (error) {
+      diagnostics.push({
+        level: previewDiagnosticLevel(entry),
+        message: `Preview could not serve "${entry.path}": ${errorMessage(error)}`,
+      });
     }
+  }
+
+  if (primaryPath && !cachedPaths.has(primaryPath)) {
+    const detail = diagnostics.find((item) => item.message.includes(`"${primaryPath}"`))?.message;
+    throw new Error(detail ?? `The selected entry page "${primaryPath}" could not be served.`);
   }
 
   const urls = new Map<string, string>();
   for (const p of htmlPaths) urls.set(p, previewUrl(projectId, servedPreviewPath(p, siteRoot)));
   const primaryUrl = primaryPath ? urls.get(primaryPath) ?? '' : '';
 
-  return { urls, htmlPaths, primaryPath, primaryUrl };
+  return {
+    urls,
+    htmlPaths,
+    primaryPath,
+    primaryUrl,
+    mode: 'served',
+    diagnostics,
+  };
+}
+
+function previewDiagnosticLevel(entry: ZipEntryMeta): PreviewDiagnostic['level'] {
+  return entry.category === 'html' || entry.category === 'css' || entry.category === 'js'
+    ? 'error'
+    : 'warning';
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** The entry HTML's directory (with trailing slash), treated as the web root. */
@@ -309,8 +373,15 @@ export function augmentHtml(html: string, sourcePath: string): string {
   const nudgeType = escapeForScript(NUDGE_MESSAGE_TYPE);
   const editModeType = escapeForScript(SET_EDIT_MODE_MESSAGE_TYPE);
   const clearSelectionType = escapeForScript(CLEAR_SELECTION_MESSAGE_TYPE);
+  const statusType = escapeForScript(PREVIEW_STATUS_MESSAGE_TYPE);
   const body = [
     '(function(){',
+    // --- runtime diagnostics bridge ---
+    'var __src=' + srcLiteral + ';var __statusType=' + statusType + ';',
+    'function __report(level,message,detail){try{window.parent.postMessage({type:__statusType,level:level,message:String(message||"Preview error"),detail:detail?String(detail):undefined,sourceFile:__src},"*");}catch(_){}}',
+    'window.addEventListener("error",function(e){var t=e.target;if(t&&t!==window){var tag=(t.tagName||"resource").toLowerCase();var url=t.currentSrc||t.src||t.href||t.getAttribute&&t.getAttribute("src")||t.getAttribute&&t.getAttribute("href")||"unknown URL";__report("error","Failed to load "+tag+" resource.",url);return;}var detail=e.filename?[e.filename,e.lineno||0,e.colno||0].join(":"):undefined;__report("error",e.message||"Unhandled preview error",detail);},true);',
+    'window.addEventListener("unhandledrejection",function(e){var r=e.reason;var message=r&&r.message?r.message:String(r||"Unhandled promise rejection");var detail=r&&r.stack?r.stack:undefined;__report("error",message,detail);});',
+    'document.addEventListener("DOMContentLoaded",function(){__report("ready","Preview document loaded");},{once:true});',
     // --- storage shim ---
     'function mem(){var m=Object.create(null);return{',
     'getItem:function(k){k=String(k);return k in m?m[k]:null;},',
@@ -325,7 +396,7 @@ export function augmentHtml(html: string, sourcePath: string): string {
     'if(!ok){try{Object.defineProperty(window,n,{configurable:true,value:mem()});}catch(e){}}',
     '})(names[i]);}',
     // --- nav bridge ---
-    'var __src=' + srcLiteral + ';var __type=' + navType + ';var __editType=' + editType + ';var __selectType=' + selectType + ';var __reorderType=' + reorderType + ';var __nudgeType=' + nudgeType + ';var __editModeType=' + editModeType + ';var __clearSelectType=' + clearSelectionType + ';',
+    'var __type=' + navType + ';var __editType=' + editType + ';var __selectType=' + selectType + ';var __reorderType=' + reorderType + ';var __nudgeType=' + nudgeType + ';var __editModeType=' + editModeType + ';var __clearSelectType=' + clearSelectionType + ';',
     'document.addEventListener("click",function(e){',
     'if(window.__mockswapTextEditEnabled)return;',
     'var t=e.target;while(t&&t.nodeType!==9&&t.nodeName!=="A"){t=t.parentNode;}',

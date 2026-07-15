@@ -3,8 +3,8 @@
 > Audit date: 2026-07-13
 > Scope: application architecture, archive lifecycle, preview isolation, persistence,
 > async correctness, performance, accessibility, test/build tooling, and documentation.
-> Baseline: 101 tests and strict TypeScript passed before changes; 108 tests pass
-> after the patch set. The production build succeeds.
+> Baseline: 101 tests and strict TypeScript passed before the original audit;
+> 134 tests pass after the current patch set. The production build succeeds.
 
 ## Executive assessment
 
@@ -31,6 +31,8 @@ serve previews from a dedicated origin before being described as isolated.
 | High | Persistence | Discard superseded autosave generations before write/status updates. | A slower obsolete snapshot cannot overwrite a newer scheduled save. |
 | Medium | Performance | Cache the STORE-compressed snapshot for an unchanged archive revision. | Page navigation, selection, theme, and tab changes no longer rebuild the full zip. |
 | Medium | Preview lifecycle | Catch preview-build errors and close the busy state in `finally`. | Failures surface instead of leaving an unhandled rejection and permanent spinner. |
+| High | Active preview | Prefer and isolate browser-ready `dist`/`build`/`out` entries over source-root development HTML. | Dropped framework projects no longer open an uncompiled blank entry or collide with build assets. |
+| Medium | Preview diagnostics | Bridge iframe resource/runtime failures into a visible canvas banner and persistent onboarding error notifications. | Blank or degraded previews now explain the actual failure and offer a reload action. |
 | Medium | Memory | Revoke blob-preview URLs produced after an effect was cancelled. | Interrupted fallback rebuilds no longer leak object URLs. |
 | Medium | Async correctness | Sequence Manual Replace planning requests. | Slow earlier searches cannot overwrite a newer result/count. |
 | Medium | Worker transport | Transfer mutation buffers and file-read buffers rather than clone them. | Large replacement assets cross the worker boundary with less peak memory. |
@@ -42,7 +44,7 @@ serve previews from a dedicated origin before being described as isolated.
 
 ## Current verification
 
-- `npm test`: 18 files, 108 tests passing.
+- `npm test`: 20 files, 134 tests passing.
 - Coverage gate: 85% lines across the selected fragile core modules.
 - `npm run typecheck`: passing with strict/no-unused rules.
 - `npm run build`: passing; Vite emits separate worker, re-encoder, export,
