@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from 'react';
@@ -35,6 +36,7 @@ import {
   type PersistedSelection,
   type PersistedSession,
   type PersistedTheme,
+  type SaveSessionOutcome,
 } from './lib/idb';
 import { detectImages } from './lib/imageDetector';
 import { applyLogoHelper } from './lib/logoHelper';
@@ -63,6 +65,12 @@ import { Toast, type ToastData } from './components/Toast';
 import { formatBytes, isSupportedImageFile } from './lib/fileTypes';
 import { readPersistedPatches } from './lib/persistedPatch';
 import { DEFAULT_ARCHIVE_LIMITS } from './lib/archiveLimits';
+import {
+  INITIAL_PERSISTENCE_STATE,
+  preventUnsavedUnload,
+  reducePersistenceState,
+  shouldWarnBeforeUnload,
+} from './lib/persistenceState';
 
 /** Cap concurrent thumbnail reads to keep memory bounded. */
 const THUMBNAIL_CONCURRENCY = 4;
@@ -88,8 +96,9 @@ const SAVE_DEBOUNCE_MS = 1000;
  *  (250 ms tick) — the value is whole seconds because precision below
  *  one tick is wasteful. */
 const TOAST_AUTO_DISMISS_MS = 6000;
-const PERSISTENCE_WARNING_TITLE = "Couldn't save your session — this browser is out of storage.";
-const PERSISTENCE_WARNING_DETAIL = 'Your changes are safe in memory but a refresh will lose them. Export your zip to keep them.';
+const PERSISTENCE_QUOTA_WARNING_TITLE = "Couldn't save your session — this browser is out of storage.";
+const PERSISTENCE_ERROR_WARNING_TITLE = "Couldn't save your recovery session.";
+const PERSISTENCE_WARNING_DETAIL = 'Your changes are safe in memory, but closing or refreshing this tab can lose them. Export your zip to keep them.';
 const DEFAULT_LARGE_ZIP_WARNING_BYTES = 150 * 1024 * 1024;
 const LARGE_ZIP_WARNING_BYTES = parseLargeZipThreshold(import.meta.env.VITE_LARGE_ZIP_WARNING_BYTES);
 
@@ -224,9 +233,12 @@ export default function App() {
    * transient toasts share one timer (no per-card setTimeout fleet). Each card
    * manages its own fade-out locally so the reaper never races the
    * mount/unmount cycle.
-   */
+  */
   const [toasts, setToasts] = useState<ToastData[]>([]);
-  const [saveAtRisk, setSaveAtRisk] = useState(false);
+  const [persistenceState, dispatchPersistence] = useReducer(
+    reducePersistenceState,
+    INITIAL_PERSISTENCE_STATE,
+  );
   const [projectSaveBusy, setProjectSaveBusy] = useState(false);
   const [activeProjectRecordId, setActiveProjectRecordId] = useState<string | null>(null);
   const [checkpoints, setCheckpoints] = useState<CheckpointSummary[]>([]);
@@ -285,7 +297,6 @@ export default function App() {
   }, []);
 
   const markSessionSaveOk = useCallback(() => {
-    setSaveAtRisk(false);
     saveFailureToastShownRef.current = false;
     if (saveFailureToastIdRef.current) {
       dismissToast(saveFailureToastIdRef.current);
@@ -293,13 +304,14 @@ export default function App() {
     }
   }, [dismissToast]);
 
-  const markSessionSaveFailed = useCallback(() => {
-    setSaveAtRisk(true);
+  const markSessionSaveFailed = useCallback((outcome: Exclude<SaveSessionOutcome, 'ok'>) => {
     if (saveFailureToastShownRef.current) return;
     saveFailureToastShownRef.current = true;
     saveFailureToastIdRef.current = pushToast({
       kind: 'warning',
-      title: PERSISTENCE_WARNING_TITLE,
+      title: outcome === 'quota-exceeded'
+        ? PERSISTENCE_QUOTA_WARNING_TITLE
+        : PERSISTENCE_ERROR_WARNING_TITLE,
       detail: PERSISTENCE_WARNING_DETAIL,
       autoDismiss: false,
     });
@@ -2407,10 +2419,14 @@ export default function App() {
   useEffect(() => {
     const generation = ++sessionSaveGenerationRef.current;
     if (!project) {
+      dispatchPersistence({ type: 'reset', generation });
       markSessionSaveOk();
       return;
     }
+    dispatchPersistence({ type: 'dirty', generation });
     const handle = window.setTimeout(async () => {
+      if (sessionSaveGenerationRef.current !== generation) return;
+      dispatchPersistence({ type: 'saving', generation });
       try {
         const snapshot = await buildCurrentProjectSnapshot();
         if (!snapshot) return;
@@ -2418,12 +2434,17 @@ export default function App() {
         const saveOutcome = await saveSession(snapshot);
         if (sessionSaveGenerationRef.current !== generation) return;
         if (saveOutcome === 'ok') {
+          dispatchPersistence({ type: 'saved', generation });
           markSessionSaveOk();
         } else {
-          markSessionSaveFailed();
+          dispatchPersistence({ type: 'failed', generation });
+          markSessionSaveFailed(saveOutcome);
         }
       } catch {
-        if (sessionSaveGenerationRef.current === generation) markSessionSaveFailed();
+        if (sessionSaveGenerationRef.current === generation) {
+          dispatchPersistence({ type: 'failed', generation });
+          markSessionSaveFailed('error');
+        }
       }
     }, SAVE_DEBOUNCE_MS);
     return () => {
@@ -2433,6 +2454,12 @@ export default function App() {
       }
     };
   }, [project, buildCurrentProjectSnapshot, markSessionSaveOk, markSessionSaveFailed]);
+
+  useEffect(() => {
+    if (!project || !shouldWarnBeforeUnload(persistenceState.status)) return;
+    window.addEventListener('beforeunload', preventUnsavedUnload);
+    return () => window.removeEventListener('beforeunload', preventUnsavedUnload);
+  }, [project, persistenceState.status]);
 
   // ------------------------------------------------------------------------
   // Preview / thumbnails effects
@@ -2758,7 +2785,7 @@ export default function App() {
       <AppTopBar
         project={project}
         progress={busyPhase}
-        saveAtRisk={saveAtRisk}
+        persistenceStatus={persistenceState.status}
         projectSaveBusy={projectSaveBusy}
         projectMutationBusy={projectMutationBusy}
         theme={theme}

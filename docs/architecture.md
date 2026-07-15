@@ -62,6 +62,7 @@ src/
 │   ├── previewService.ts           opaque blob fallback
 │   ├── exportService.ts            zip/report generation helpers
 │   ├── idb.ts                      persistence stores and outcomes
+│   ├── persistenceState.ts         autosave state machine/unload policy
 │   └── persistedPatch.ts           restore-time union validation
 └── workers/
     ├── projectWorker.ts            JSZip ownership and heavy packaging
@@ -206,10 +207,20 @@ coming from different source states. Superseded autosave generations are
 discarded before they write or update status. The zip blob is cached and reused
 while the archive revision is unchanged.
 
-Save APIs return `ok`, `quota-exceeded`, or `error`. Failure marks the top bar at
-risk and creates one persistent warning per failure streak. Project/checkpoint
-lists return types that omit their stripped blob fields, although the current
-store shape still requires IndexedDB to materialize full rows before stripping.
+`persistenceState.ts` accepts generation-stamped transitions. An active project
+enters `dirty` while its one-second debounce is pending, `saving` before snapshot
+generation and the IndexedDB write, `saved` only after that generation's write
+returns `ok`, and `at-risk` after a snapshot/write failure. Completion events
+are accepted only from the currently-saving generation, so stale asynchronous
+successes cannot misreport newer edits as saved. The top bar exposes all four
+states. `dirty`, `saving`, and `at-risk` install a `beforeunload` handler; `saved`
+and the no-project state do not.
+
+Save APIs return `ok`, `quota-exceeded`, or `error`. Failure also creates one
+persistent warning per failure streak, with quota failures distinguished from
+other storage errors. Project/checkpoint lists return types that omit their
+stripped blob fields, although the current store shape still requires IndexedDB
+to materialize full rows before stripping.
 
 ## 8. Responsive UI and accessibility
 

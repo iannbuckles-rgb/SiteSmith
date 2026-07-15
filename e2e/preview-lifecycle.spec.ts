@@ -5,7 +5,24 @@ import JSZip from 'jszip';
 
 test('serves a large active site from one immutable generation and exports it', async ({ page }) => {
   await page.goto('/');
+  await trackPersistenceStates(page);
   await uploadZip(page, await modernSiteZip('modern-site.zip', 500));
+
+  const persistence = page.getByTestId('persistence-status');
+  await expect(persistence).toHaveAttribute('data-state', 'dirty');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })).toBe(true);
+  await expect(persistence).toHaveAttribute('data-state', 'saved');
+  const persistenceStates = await readPersistenceStates(page);
+  const dirtyIndex = persistenceStates.indexOf('dirty');
+  const savingIndex = persistenceStates.indexOf('saving');
+  const savedIndex = persistenceStates.lastIndexOf('saved');
+  expect(dirtyIndex).toBeGreaterThanOrEqual(0);
+  expect(savingIndex).toBeGreaterThan(dirtyIndex);
+  expect(savedIndex).toBeGreaterThan(savingIndex);
 
   const iframe = page.getByTestId('preview-iframe');
   await expect(iframe).toHaveAttribute('src', /\/preview\/project-\d+\/[^/]+\/index\.html$/);
@@ -110,4 +127,29 @@ async function previewCacheNames(page: Page): Promise<string[]> {
   return page.evaluate(async () => (await caches.keys())
     .filter((name) => name.startsWith('mockswap-preview:'))
     .sort());
+}
+
+async function trackPersistenceStates(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const scope = window as unknown as { __mockupSwapPersistenceStates?: string[] };
+    const states: string[] = [];
+    scope.__mockupSwapPersistenceStates = states;
+    const observer = new MutationObserver(() => {
+      const state = document.querySelector('[data-testid="persistence-status"]')?.getAttribute('data-state');
+      if (state && states.at(-1) !== state) states.push(state);
+    });
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-state'],
+      childList: true,
+      subtree: true,
+    });
+  });
+}
+
+async function readPersistenceStates(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const scope = window as unknown as { __mockupSwapPersistenceStates?: string[] };
+    return scope.__mockupSwapPersistenceStates ?? [];
+  });
 }

@@ -1,4 +1,5 @@
 import type { PersistedTheme } from '../lib/idb';
+import type { PersistenceStatus } from '../lib/persistenceState';
 import type { Phase } from '../lib/progress';
 import type { LoadedProject } from '../types';
 import { TopBarProgress } from './TopBarProgress';
@@ -6,7 +7,7 @@ import { TopBarProgress } from './TopBarProgress';
 interface AppTopBarProps {
   project: LoadedProject | null;
   progress: Phase;
-  saveAtRisk: boolean;
+  persistenceStatus: PersistenceStatus;
   projectSaveBusy: boolean;
   projectMutationBusy: boolean;
   theme: PersistedTheme;
@@ -19,7 +20,7 @@ interface AppTopBarProps {
 export function AppTopBar({
   project,
   progress,
-  saveAtRisk,
+  persistenceStatus,
   projectSaveBusy,
   projectMutationBusy,
   theme,
@@ -48,9 +49,7 @@ export function AppTopBar({
         ) : (
           <span className="hidden shrink-0 rounded-full bg-zinc-800 px-2 py-0.5 sm:inline">No project</span>
         )}
-        {project && saveAtRisk && (
-          <span className="hidden shrink-0 rounded-full border border-amber-500/40 bg-amber-950/60 px-2 py-0.5 font-medium text-amber-200 sm:inline">Save at risk</span>
-        )}
+        {project && <PersistenceBadge status={persistenceStatus} />}
         <TopBarProgress phase={progress} onCancel={progress.kind === 'detecting' ? onCancelOnboarding : undefined} />
         {project && (
           <>
@@ -90,6 +89,49 @@ export function AppTopBar({
         </button>
       </div>
     </header>
+  );
+}
+
+const PERSISTENCE_BADGE: Record<PersistenceStatus, {
+  label: string;
+  title: string;
+  className: string;
+}> = {
+  dirty: {
+    label: 'Unsaved',
+    title: 'Changes are waiting for browser-local autosave',
+    className: 'border-amber-500/40 bg-amber-950/60 text-amber-200',
+  },
+  saving: {
+    label: 'Saving…',
+    title: 'Writing the recovery session to browser storage',
+    className: 'border-violet-500/40 bg-violet-950/60 text-violet-200',
+  },
+  saved: {
+    label: 'Saved',
+    title: 'The current recovery session is stored in this browser',
+    className: 'border-emerald-500/40 bg-emerald-950/60 text-emerald-200',
+  },
+  'at-risk': {
+    label: 'Save at risk',
+    title: 'The latest recovery-session save failed; export before closing this tab',
+    className: 'border-red-500/40 bg-red-950/60 text-red-200',
+  },
+};
+
+function PersistenceBadge({ status }: { status: PersistenceStatus }) {
+  const badge = PERSISTENCE_BADGE[status];
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      title={badge.title}
+      data-testid="persistence-status"
+      data-state={status}
+      className={`shrink-0 rounded-full border px-2 py-0.5 font-medium ${badge.className}`}
+    >
+      {badge.label}
+    </span>
   );
 }
 

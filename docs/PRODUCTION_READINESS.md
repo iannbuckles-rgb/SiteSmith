@@ -29,6 +29,7 @@ serve previews from a dedicated origin before being described as isolated.
 | High | Persistence | Make archive revision an explicit autosave dependency. | Source mutations reliably schedule persistence without waiting for unrelated UI changes. |
 | High | Persistence | Guard snapshot generation with a synchronous mutation version. | A save cannot pair an older zip blob with newer patch metadata. |
 | High | Persistence | Discard superseded autosave generations before write/status updates. | A slower obsolete snapshot cannot overwrite a newer scheduled save. |
+| High | Persistence | Expose a generation-aware `dirty / saving / saved / at-risk` state machine and unload protection. | The UI reflects the active IndexedDB write precisely, stale completions are ignored, and the browser warns while recovery data can still be lost. |
 | Medium | Performance | Cache the STORE-compressed snapshot for an unchanged archive revision. | Page navigation, selection, theme, and tab changes no longer rebuild the full zip. |
 | Medium | Preview lifecycle | Catch preview-build errors and close the busy state in `finally`. | Failures surface instead of leaving an unhandled rejection and permanent spinner. |
 | High | Active preview | Prefer and isolate browser-ready `dist`/`build`/`out` entries over source-root development HTML. | Dropped framework projects no longer open an uncompiled blank entry or collide with build assets. |
@@ -48,7 +49,7 @@ serve previews from a dedicated origin before being described as isolated.
 
 ## Current verification
 
-- `npm test`: 21 files, 143 tests passing.
+- `npm test`: 23 files, 153 tests passing.
 - `npm run test:e2e`: 2 Chromium tests passing.
 - Coverage gate: 85% lines across the selected fragile core modules.
 - `npm run typecheck`: passing with strict/no-unused rules.
@@ -91,12 +92,6 @@ serve previews from a dedicated origin before being described as isolated.
    thread. Either use a worker-safe HTML parser with strict size limits or split
    source extraction in the worker from small, scheduled DOM parse batches on
    the UI thread.
-4. **Expose explicit persistence state.** Superseded generations are discarded
-   before writes and the browser serializes store transactions, but the UI only
-   distinguishes healthy versus at-risk. A small save queue/state machine would
-   expose `dirty / saving / saved / at-risk` precisely and make unload warnings
-   possible.
-
 ### P2 — Maintainability and coverage
 
 1. Add component/integration tests for autosave-after-edit, cancelled preview

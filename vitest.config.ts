@@ -20,6 +20,7 @@ export default defineConfig({
         'src/lib/lineDiff.ts',
         'src/lib/manualReplace.ts',
         'src/lib/pathRelative.ts',
+        'src/lib/persistenceState.ts',
         'src/lib/persistedPatch.ts',
         'src/lib/undoStack.ts',
         'src/lib/urlResolver.ts',
