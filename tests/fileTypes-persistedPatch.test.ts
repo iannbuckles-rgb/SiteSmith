@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { getCategory, IMAGE_FILE_ACCEPT, isSupportedImageFile } from '../src/lib/fileTypes';
+import {
+  getCategory,
+  IMAGE_FILE_ACCEPT,
+  isRecognizedProjectFile,
+  isSupportedImageFile,
+  PROJECT_FILE_ACCEPT,
+} from '../src/lib/fileTypes';
+import { guessMimeType } from '../src/lib/mime';
 import { readPersistedPatches } from '../src/lib/persistedPatch';
 
 describe('image file input contract', () => {
@@ -14,6 +21,40 @@ describe('image file input contract', () => {
     expect(isSupportedImageFile({ name: 'notes.txt', type: 'text/plain' })).toBe(false);
     expect(IMAGE_FILE_ACCEPT).toContain('image/svg+xml');
     expect(IMAGE_FILE_ACCEPT).toContain('.svg');
+  });
+
+  it('classifies modern image, source, style, and font formats consistently', () => {
+    expect(getCategory('hero.APNG')).toBe('image');
+    expect(getCategory('photo.tiff')).toBe('image');
+    expect(getCategory('app.tsx')).toBe('js');
+    expect(getCategory('theme.scss')).toBe('css');
+    expect(getCategory('collection.ttc')).toBe('font');
+    expect(isSupportedImageFile({ name: 'photo.heic', type: '' })).toBe(true);
+  });
+
+  it('recognizes framework, data, media, runtime, and extensionless project files', () => {
+    expect(isRecognizedProjectFile({ name: 'Card.vue', type: '' })).toBe(true);
+    expect(isRecognizedProjectFile({ name: 'config.yaml', type: '' })).toBe(true);
+    expect(isRecognizedProjectFile({ name: 'intro.mov', type: '' })).toBe(true);
+    expect(isRecognizedProjectFile({ name: 'module.wasm', type: '' })).toBe(true);
+    expect(isRecognizedProjectFile({ name: 'render.py', type: '' })).toBe(true);
+    expect(isRecognizedProjectFile({ name: 'scene.glb', type: '' })).toBe(true);
+    expect(isRecognizedProjectFile({ name: 'Dockerfile', type: '' })).toBe(true);
+    expect(isRecognizedProjectFile({ name: 'opaque', type: 'application/octet-stream' })).toBe(false);
+    expect(PROJECT_FILE_ACCEPT).toContain('.tar.gz');
+    expect(PROJECT_FILE_ACCEPT).toContain('.tsx');
+  });
+
+  it('serves expanded assets and source with specific MIME types', () => {
+    expect(guessMimeType('hero.jxl')).toBe('image/jxl');
+    expect(guessMimeType('component.tsx')).toBe('text/tsx;charset=utf-8');
+    expect(guessMimeType('audio.opus')).toBe('audio/opus');
+    expect(guessMimeType('font.ttc')).toBe('font/collection');
+    expect(guessMimeType('scene.glb')).toBe('model/gltf-binary');
+    expect(guessMimeType('render.py')).toBe('text/x-python;charset=utf-8');
+    expect(guessMimeType('Card.vue')).toBe('text/plain;charset=utf-8');
+    expect(guessMimeType('server.scala')).toBe('text/plain;charset=utf-8');
+    expect(guessMimeType('Dockerfile')).toBe('text/plain;charset=utf-8');
   });
 });
 

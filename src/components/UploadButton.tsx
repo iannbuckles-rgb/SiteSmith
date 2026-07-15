@@ -1,21 +1,15 @@
 import { useCallback, useRef, useState, type DragEvent } from 'react';
 
+import { PROJECT_FILE_ACCEPT } from '../lib/fileTypes';
 import { normalizeDataTransfer, normalizeFileList } from '../lib/projectInput';
 import { UploadIcon } from './FileIcon';
 
 interface UploadButtonProps {
-  /** Receives a ready-to-parse `.zip` File — for folders / loose files this
+  /** Receives a ready-to-parse `.zip` File — for TAR/folders/loose files this
    *  is packed in-memory before the callback fires. */
   onFile: (file: File) => void;
   disabled?: boolean;
 }
-
-/** Broadened picker filter: a zip, or any loose static-web file. */
-const FILE_ACCEPT = [
-  '.zip', 'application/zip', 'application/x-zip-compressed',
-  '.html', '.htm', '.css', '.js', '.mjs', '.json', '.webmanifest',
-  'image/*', '.svg', '.woff', '.woff2', '.ttf', '.otf',
-].join(',');
 
 export function UploadButton({ onFile, disabled = false }: UploadButtonProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -87,7 +81,7 @@ export function UploadButton({ onFile, disabled = false }: UploadButtonProps) {
         ref={fileInputRef}
         type="file"
         multiple
-        accept={FILE_ACCEPT}
+        accept={PROJECT_FILE_ACCEPT}
         onChange={handleFileInput}
         className="sr-only"
         data-testid="zip-input"
@@ -141,7 +135,7 @@ export function UploadButton({ onFile, disabled = false }: UploadButtonProps) {
             {packing ? 'Packaging project…' : 'Upload a website'}
           </p>
           <p className="mt-0.5 text-xs text-zinc-500">
-            Drop a <span className="font-medium text-zinc-400">.zip</span>, a project{' '}
+            Drop a <span className="font-medium text-zinc-400">ZIP / TAR</span>, a project{' '}
             <span className="font-medium text-zinc-400">folder</span>, or its files
           </p>
         </div>

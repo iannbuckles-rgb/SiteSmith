@@ -226,9 +226,8 @@ async function buildServedPreview(
         await cache.put(key, new Response(html, { headers: previewHeaders('text/html;charset=utf-8') }));
       } else {
         const blob = await file.async('blob');
-        const mime = entry.category === 'css'
-          ? 'text/css;charset=utf-8'
-          : guessMimeType(entry.name) ?? 'application/octet-stream';
+        const mime = guessMimeType(entry.name)
+          ?? (entry.category === 'css' ? 'text/css;charset=utf-8' : 'application/octet-stream');
         await cache.put(key, new Response(blob, { headers: previewHeaders(mime) }));
       }
     } catch {

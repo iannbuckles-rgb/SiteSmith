@@ -6,6 +6,7 @@ import type {
 } from '../types';
 import { sanitizeFilename, uniqueAssetPath } from './filenameSanitizer';
 import { pathRelative } from './pathRelative';
+import { findImageSetFunctions } from './cssFunctions';
 import { findCssCommentRanges, findHtmlCommentRanges, isOffsetInRanges } from './sourceRanges';
 
 const HTML_IMAGE_URL_ATTRS = new Set([
@@ -18,6 +19,11 @@ const HTML_IMAGE_URL_ATTRS = new Set([
   'data-background',
   'data-image',
   'data-image-src',
+  'data-original-src',
+  'data-src-retina',
+  'data-flickity-lazyload',
+  'data-zoom-image',
+  'data-thumb',
   'data-full',
   'data-large',
   'poster',
@@ -48,13 +54,20 @@ export type ReplacementPatch = Extract<AppliedPatch, { action: 'replace' }>;
  * Whether the replacement pipeline can handle a given detection. Mirrors
  * the explicit scope of this step:
  *   - HTML image-bearing attributes (`src`, lazy data attrs, `poster`,
- *     social meta/link URLs, SVG `<image href>`, and `srcset` candidates).
+ *     social meta/link URLs, embedded objects, SVG `<image href>`, and
+ *     `srcset` candidates).
  *   - HTML inline `style` URL tokens.
  *   - Manifest image resources with an exact JSON path.
- *   - CSS `url(...)` only.
+ *   - CSS `url(...)` and quoted `image-set(...)` candidates.
+ *   - Conservative quoted literals detected in JS/TS/JSX/TSX.
  */
 export function canReplace(detection: ImageDetection): boolean {
-  return isHtmlReplaceableRef(detection) || isManifestReplaceableRef(detection) || isCssUrl(detection);
+  return (
+    isHtmlReplaceableRef(detection)
+    || isManifestReplaceableRef(detection)
+    || isCssReplaceableRef(detection)
+    || isCodeReplaceableRef(detection)
+  );
 }
 
 /**
@@ -95,6 +108,8 @@ function isHtmlReplaceableRef(detection: ImageDetection): boolean {
   if (tag === 'source') return attr === 'src';
   if (tag === 'video') return attr === 'poster';
   if (tag === 'input') return attr === 'src';
+  if (tag === 'object') return attr === 'data';
+  if (tag === 'embed') return attr === 'src';
   if (tag === 'image' || tag === 'feimage') return attr === 'href' || attr === 'xlink:href';
   if (tag === 'link') return attr === 'href' && isImageLinkRel(detection.extra?.rel);
   if (tag === 'meta') return attr === 'content' && isImageMetaProperty(detection.extra?.property);
@@ -115,6 +130,19 @@ function isCssUrl(detection: ImageDetection): boolean {
     && detection.sourceTag.toLowerCase() === 'url'
     && detection.sourceAttr.toLowerCase() === 'url'
   );
+}
+
+function isCssReplaceableRef(detection: ImageDetection): boolean {
+  if (isCssUrl(detection)) return true;
+  return (
+    detection.sourceKind === 'css'
+    && detection.sourceTag.toLowerCase() === 'image-set'
+    && detection.sourceAttr.toLowerCase() === 'string'
+  );
+}
+
+function isCodeReplaceableRef(detection: ImageDetection): boolean {
+  return detection.sourceKind === 'code';
 }
 
 function isImageLinkRel(rel: string | undefined): boolean {
@@ -155,7 +183,7 @@ export function isBroken(detection: ImageDetection): boolean {
  *   3. Compute a relative reference string from the source file's
  *      directory to that target so the rendered HTML/CSS picks it up.
  *   4. Surgically rewrite the matching URL token inside the source file
- *      (HTML attribute or CSS `url(...)`).
+ *      (markup attribute, manifest value, CSS reference, or code literal).
  *   5. Persist both the new asset bytes and the patched source text back
  *      into the same `JSZip` instance held by `project`.
  *
@@ -240,7 +268,9 @@ export async function applyReplacement(
     ? patchCss(sourceText, searchValue, newRelativeRef)
     : detection.sourceKind === 'manifest'
       ? patchManifest(sourceText, detection, searchValue, newRelativeRef)
-      : patchHtml(sourceText, detection, searchValue, newRelativeRef);
+      : detection.sourceKind === 'code'
+        ? patchCodeReference(sourceText, detection, searchValue, newRelativeRef)
+        : patchHtml(sourceText, detection, searchValue, newRelativeRef);
 
   if (patched === sourceText) {
     // The diagnostic branches on what we actually searched for, not on
@@ -482,11 +512,127 @@ function htmlTagMatchesDetection(
 
 function patchCss(css: string, searchValue: string, newRef: string): string {
   const comments = findCssCommentRanges(css);
-  return css.replace(CSS_URL_RE, (match: string, q: string, ref: string, offset: number) => {
+  const withUrls = css.replace(CSS_URL_RE, (match: string, q: string, ref: string, offset: number) => {
     if (isOffsetInRanges(offset, comments)) return match;
     if (decodeValue(ref) !== searchValue && ref !== searchValue) return match;
     return `url(${q}${newRef}${q})`;
   });
+
+  const nextComments = findCssCommentRanges(withUrls);
+  const ranges = findImageSetFunctions(withUrls);
+  if (ranges.length === 0) return withUrls;
+  let out = '';
+  let cursor = 0;
+  for (const range of ranges) {
+    const body = withUrls.slice(range.bodyStart, range.bodyEnd);
+    out += withUrls.slice(cursor, range.bodyStart);
+    if (isOffsetInRanges(range.start, nextComments)) {
+      out += body;
+      cursor = range.bodyEnd;
+      continue;
+    }
+    let changed = false;
+    const nextBody = body.replace(/(['"])([^'"]+)\1/g, (literal: string, quote: string, ref: string, literalOffset: number) => {
+      if (/url\(\s*$/i.test(body.slice(0, literalOffset))) return literal;
+      if (decodeValue(ref) !== searchValue && ref !== searchValue) return literal;
+      changed = true;
+      return `${quote}${newRef}${quote}`;
+    });
+    out += changed ? nextBody : body;
+    cursor = range.bodyEnd;
+  }
+  return out + withUrls.slice(cursor);
+}
+
+/** Rewrite only quoted code literals while skipping comments. Imports,
+ * require/new-URL/fetch calls, and static JSX attributes all reduce to an
+ * exact literal. CSS-in-JS detections are rewritten with the existing CSS URL
+ * surgery inside that literal instead of performing an unsafe project-wide
+ * text replacement. */
+function patchCodeReference(
+  source: string,
+  detection: ImageDetection,
+  searchValue: string,
+  newRef: string,
+): string {
+  let out = '';
+  let cursor = 0;
+  let changed = false;
+
+  while (cursor < source.length) {
+    const char = source[cursor];
+    const next = source[cursor + 1];
+
+    if (char === '/' && next === '/') {
+      const end = source.indexOf('\n', cursor + 2);
+      const stop = end === -1 ? source.length : end;
+      out += source.slice(cursor, stop);
+      cursor = stop;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      const end = source.indexOf('*/', cursor + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      out += source.slice(cursor, stop);
+      cursor = stop;
+      continue;
+    }
+    if (char !== '"' && char !== "'" && char !== '`') {
+      out += char;
+      cursor += 1;
+      continue;
+    }
+
+    const quote = char;
+    let end = cursor + 1;
+    let escaped = false;
+    while (end < source.length) {
+      const current = source[end];
+      if (escaped) {
+        escaped = false;
+      } else if (current === '\\') {
+        escaped = true;
+      } else if (current === quote) {
+        break;
+      }
+      end += 1;
+    }
+    if (end >= source.length) {
+      out += source.slice(cursor);
+      break;
+    }
+
+    const value = source.slice(cursor + 1, end);
+    let replacement = value;
+    if (value === searchValue && codeLiteralMatchesContext(source, cursor, detection)) {
+      replacement = newRef;
+    } else if (detection.sourceTag === 'url' || detection.sourceTag === 'image-set') {
+      replacement = patchCss(value, searchValue, newRef);
+    }
+    if (replacement !== value) changed = true;
+    out += quote + replacement + quote;
+    cursor = end + 1;
+  }
+
+  return changed ? out : source;
+}
+
+function codeLiteralMatchesContext(
+  source: string,
+  quoteOffset: number,
+  detection: ImageDetection,
+): boolean {
+  const before = source.slice(Math.max(0, quoteOffset - 200), quoteOffset);
+  switch (detection.sourceTag) {
+    case 'new-url': return /\bnew\s+URL\s*\(\s*$/.test(before);
+    case 'require': return /\brequire\s*\(\s*$/.test(before);
+    case 'fetch': return /\bfetch\s*\(\s*$/.test(before);
+    case 'import': return /(?:(?:\bfrom|\bimport|\bexport)\s*|\bimport\s*\(\s*)$/.test(before);
+    default: {
+      const attr = detection.sourceAttr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`\\b${attr}\\s*=\\s*(?:\\{\\s*)?$`, 'i').test(before);
+    }
+  }
 }
 
 function patchManifest(

@@ -18,7 +18,16 @@ function isJunkSegment(segment: string): boolean {
  * but only the lightweight `ZipEntryMeta` list is built eagerly.
  */
 export async function loadZipFromFile(file: File): Promise<LoadedProject> {
-  const zip = await JSZip.loadAsync(file);
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(file, { checkCRC32: false });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.toLowerCase() : '';
+    if (detail.includes('encrypted')) {
+      throw new Error('Encrypted ZIP archives are not supported. Export the website as an unencrypted ZIP.');
+    }
+    throw new Error('Could not read this archive. Use a valid, unencrypted ZIP, TAR, TAR.GZ, or TGZ file.');
+  }
 
   const entries: ZipEntryMeta[] = [];
   let totalSize = 0;
@@ -27,14 +36,38 @@ export async function loadZipFromFile(file: File): Promise<LoadedProject> {
   let jsFiles = 0;
   let imageFiles = 0;
   let filesCount = 0;
+  const seenPaths = new Map<string, string>();
 
   zip.forEach((relativePath, zipEntry) => {
     const normalized = normalizePath(relativePath);
-    // Skip absolute paths that occasionally leak in.
-    if (!normalized || normalized.startsWith('/')) return;
+    if (!normalized) return;
+    if (
+      normalized.startsWith('/')
+      || /^[a-z]:\//i.test(normalized)
+      || /[\0-\x1f\x7f]/.test(normalized)
+    ) {
+      throw new Error(`The archive contains an unsafe path: "${relativePath}".`);
+    }
 
     const segments = normalized.split('/');
+    if (segments.some((segment) => segment === '.' || segment === '..')) {
+      throw new Error(`The archive contains an unsafe relative path: "${relativePath}".`);
+    }
     if (segments.some(isJunkSegment)) return;
+
+    const unsafeOriginalName = (zipEntry as unknown as { unsafeOriginalName?: string }).unsafeOriginalName;
+    if (unsafeOriginalName && normalizePath(unsafeOriginalName) !== normalized) {
+      throw new Error(`The archive contains an unsafe parent path: "${unsafeOriginalName}".`);
+    }
+
+    const foldedPath = normalized.toLocaleLowerCase('en-US');
+    const priorPath = seenPaths.get(foldedPath);
+    if (priorPath && priorPath !== normalized) {
+      throw new Error(
+        `The archive contains paths that differ only by letter case: "${priorPath}" and "${normalized}".`,
+      );
+    }
+    seenPaths.set(foldedPath, normalized);
 
     const baseName = segments[segments.length - 1];
     const isDir = zipEntry.dir;
@@ -66,6 +99,10 @@ export async function loadZipFromFile(file: File): Promise<LoadedProject> {
       }
     }
   });
+
+  if (filesCount === 0) {
+    throw new Error('The archive contains no usable website files.');
+  }
 
   entries.sort((a, b) => a.path.localeCompare(b.path));
 

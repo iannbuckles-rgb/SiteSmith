@@ -1,19 +1,21 @@
 # MockupSwap — Architecture
 
 > Maintenance rule: update this document whenever architecture changes.
-> Last reconciled with the codebase: 2026-07-13.
+> Last reconciled with the codebase: 2026-07-15.
 
 ## 1. Purpose and boundaries
 
-MockupSwap is a local-first React application for loading a static website zip,
-detecting image references, editing HTML/CSS/manifest content, previewing the
-result, and exporting a deployable zip. Project bytes remain in the browser;
+MockupSwap is a local-first React application for loading a static website
+archive/folder, detecting image references, editing source content, previewing
+the result, and exporting a deployable zip. Project bytes remain in the browser;
 there is no application backend, authentication provider, telemetry service, or
 API key.
 
-The editor understands static HTML, CSS, manifests, and literal source changes.
-It can render active built sites through the preview service worker, but it does
-not statically discover arbitrary JavaScript-generated asset paths.
+The editor understands static HTML, CSS/preprocessor sources, manifests,
+framework templates, and conservative literal visual references in JavaScript
+and TypeScript families. It can render active built sites through the preview
+service worker, but it neither builds source projects nor discovers arbitrary
+computed runtime asset paths.
 
 ## 2. Stack
 
@@ -21,9 +23,9 @@ not statically discover arbitrary JavaScript-generated asset paths.
 | --- | --- |
 | UI | React 18 + TypeScript 5 + Tailwind CSS 4 |
 | Build | Vite 5 |
-| Archive | JSZip 3 behind `ZipArchiveLike` |
+| Archive | ZIP via JSZip 3; browser-side POSIX/GNU/PAX TAR + gzip intake |
 | Worker | Module Web Worker for zip parse, logo scan, snapshot, and export |
-| Detection | DOMParser for HTML; comment-aware scanners for CSS/manifest |
+| Detection | DOMParser for markup; comment-aware CSS/code/manifest scanners |
 | Preview | Service worker path server, with blob-based fallback |
 | Persistence | IndexedDB sessions, named projects, and checkpoints |
 | Tests | Vitest 4 + jsdom + V8 coverage |
@@ -47,6 +49,8 @@ src/
 │   └── ErrorBoundary.tsx           app/panel recovery UI
 ├── lib/
 │   ├── archiveTypes.ts             JSZip-compatible abstraction
+│   ├── projectInput.ts              ZIP/TAR/folder/loose-file normalization
+│   ├── fileTypes.ts                 shared format and picker contracts
 │   ├── workerZipArchive.ts         main-thread worker-backed facade
 │   ├── projectWorkerClient.ts      request/progress/cancel transport
 │   ├── imageDetector.ts            image reference scan
@@ -73,13 +77,21 @@ adding more features.
 
 ## 4. Archive and worker model
 
-On upload, the worker loads JSZip and retains the base archive under a generated
+Before worker handoff, `projectInput.ts` recognizes ZIP signatures, unpacks
+TAR/TAR.GZ/TGZ regular files, traverses directory picks/drops, normalizes safe
+relative paths, rejects case-collisions, and packages non-ZIP inputs as ZIP.
+Unknown companion files are retained when the selection contains recognizable
+website source or assets. Symlinks, devices, traversal paths, and unsupported
+archive types are not imported.
+
+The worker then loads JSZip and retains the base archive under a generated
 project id. It returns only file metadata, summary data, and logo candidates.
 The UI holds a `WorkerZipArchive`, which implements the small `ZipArchiveLike`
 surface used by the pure libraries.
 
 ```text
-File
+Archive / folder / loose files
+  → safe normalization to ZIP
   → project worker: JSZip + entry metadata + logo scan
   → WorkerZipArchive facade in App
   → main-thread DOM image detection (worker file reads)
@@ -98,10 +110,15 @@ Only one live project is expected, and replaced project ids are disposed.
 
 ## 5. Detection and mutation
 
-`imageDetector.ts` reads HTML, standalone CSS, and manifest files. HTML is
-enumerated with `DOMParser`; template/noscript content is intentionally ignored.
-CSS `url()` scanning masks comments before matching. URLs are resolved against
-zip paths and classified as local, missing, or remote/risky.
+`imageDetector.ts` reads HTML, CSS/preprocessor files, manifests, framework
+templates, and JS/TS/JSX/TSX source. HTML is enumerated with `DOMParser`;
+template/noscript content is intentionally ignored for deployable HTML but
+exposed while scanning framework template files. CSS scanning covers `url()`
+and quoted `image-set()` candidates. Code scanning is deliberately limited to
+literal imports/require, `new URL(..., import.meta.url)`, fetch calls, static JSX
+attributes, and CSS-in-JS URLs; comments and dynamic expressions are excluded.
+URLs are resolved against archive paths and classified as local, missing, or
+remote/risky.
 
 All mutations operate on `project.zip` and produce an `AppliedPatch` union
 member. Detection-derived actions use a composite identity:
@@ -220,5 +237,5 @@ When extending the system:
 5. Validate persisted schema additions and bump the schema/database version as
    appropriate.
 6. Clean up object URLs, listeners, timers, worker requests, and abort handlers.
-7. Add regression tests before broadening HTML/CSS matching rules.
+7. Add regression tests before broadening markup, CSS, or code matching rules.
 8. Reassess both served and blob preview modes for every sandbox/CSP change.

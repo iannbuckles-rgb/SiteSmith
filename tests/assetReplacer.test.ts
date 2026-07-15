@@ -142,6 +142,38 @@ describe('assetReplacer applyReplacement', () => {
     await expectUndoRestores(project, patch, 'styles/site.css', source);
   });
 
+  it('rewrites quoted CSS image-set candidates and preserves descriptors', async () => {
+    const source = '.hero{background-image:image-set(url("../images/hero.png") 1x, "../images/hero@2x.jxl" 2x)}';
+    const project = makeProject({
+      'styles/site.css': source,
+      'images/hero.png': new Uint8Array([0]),
+      'images/hero@2x.jxl': new Uint8Array([1]),
+    });
+    const detection: ImageDetection = {
+      rawUrl: '../images/hero@2x.jxl',
+      resolvedPath: 'images/hero@2x.jxl',
+      type: 'hero',
+      status: 'ok',
+      sourceKind: 'css',
+      sourceFile: 'styles/site.css',
+      sourceTag: 'image-set',
+      sourceAttr: 'string',
+      extra: { cssProperty: 'background-image' },
+    };
+
+    expect(canReplace(detection)).toBe(true);
+    expect(canRemove(detection)).toBe(false);
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([2]),
+      filename: 'Hero Retina.avif',
+    });
+
+    const css = await zipText(project, 'styles/site.css');
+    expect(css).toContain('url("../images/hero.png") 1x');
+    expect(css).toContain('"../assets/mockups/hero-retina.avif" 2x');
+    await expectUndoRestores(project, patch, 'styles/site.css', source);
+  });
+
   it('re-applies against the previous source value and preserves old replacement assets', async () => {
     const project = makeProject({
       'index.html': '<img src="images/hero.png" alt="Hero">',
@@ -313,6 +345,69 @@ describe('assetReplacer applyReplacement', () => {
     expect(next.icons[0].src).toBe('images/shared.png');
     expect(next.screenshots[0].src).toBe('./assets/mockups/screenshot-replacement.png');
     await expectUndoRestores(project, patch, 'manifest.webmanifest', manifest);
+  });
+
+  it('rewrites a targeted code import literal without touching comments or unrelated strings', async () => {
+    const source = [
+      "// import backup from '../images/hero.apng';",
+      "import hero from '../images/hero.apng';",
+      "const documentation = '../images/hero.apng';",
+    ].join('\n');
+    const project = makeProject({
+      'src/App.tsx': source,
+      'images/hero.apng': new Uint8Array([0]),
+    });
+    const detection: ImageDetection = {
+      rawUrl: '../images/hero.apng',
+      resolvedPath: 'images/hero.apng',
+      type: 'hero',
+      status: 'ok',
+      sourceKind: 'code',
+      sourceFile: 'src/App.tsx',
+      sourceTag: 'import',
+      sourceAttr: 'source',
+    };
+
+    expect(canReplace(detection)).toBe(true);
+    expect(canRemove(detection)).toBe(false);
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([7, 8]),
+      filename: 'New Hero.jxl',
+    });
+
+    const code = await zipText(project, 'src/App.tsx');
+    expect(code).toContain("// import backup from '../images/hero.apng';");
+    expect(code).toContain("import hero from '../assets/mockups/new-hero.jxl';");
+    expect(code).toContain("const documentation = '../images/hero.apng';");
+    await expectUndoRestores(project, patch, 'src/App.tsx', source);
+  });
+
+  it('rewrites a CSS-in-JS URL while preserving the rest of the template literal', async () => {
+    const source = "const styles = `.card { color:red; background:url('../images/card.heic') center/cover }`;";
+    const project = makeProject({
+      'src/theme.ts': source,
+      'images/card.heic': new Uint8Array([0]),
+    });
+    const detection: ImageDetection = {
+      rawUrl: '../images/card.heic',
+      resolvedPath: 'images/card.heic',
+      type: 'background',
+      status: 'ok',
+      sourceKind: 'code',
+      sourceFile: 'src/theme.ts',
+      sourceTag: 'url',
+      sourceAttr: 'url',
+      extra: { cssProperty: 'background' },
+    };
+
+    const patch = await applyReplacement(project, detection, {
+      bytes: new Uint8Array([9]),
+      filename: 'Card Background.avif',
+    });
+    const code = await zipText(project, 'src/theme.ts');
+    expect(code).toContain("background:url('../assets/mockups/card-background.avif') center/cover");
+    expect(code).toContain('color:red');
+    await expectUndoRestores(project, patch, 'src/theme.ts', source);
   });
 });
 

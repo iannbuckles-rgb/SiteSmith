@@ -1,6 +1,6 @@
 import type { AppliedPatch, EditorEditField, ImageSourceKind } from '../types';
 
-const IMAGE_SOURCE_KINDS = new Set<ImageSourceKind>(['html', 'css', 'manifest']);
+const IMAGE_SOURCE_KINDS = new Set<ImageSourceKind>(['html', 'css', 'manifest', 'code']);
 const EDITOR_FIELDS = new Set<EditorEditField>([
   'text', 'src', 'alt', 'href', 'target', 'rel', 'title', 'id', 'class',
   'style', 'role', 'aria-label', 'name', 'type', 'value', 'placeholder',

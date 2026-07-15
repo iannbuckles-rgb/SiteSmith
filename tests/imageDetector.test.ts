@@ -15,6 +15,7 @@ describe('imageDetector', () => {
       ].join(''),
       'styles/site.css': [
         '.hero{background:url("../images/hero.png")}',
+        '.responsive{background-image:image-set(url("../images/hero.png") 1x, "../images/hero.jxl" 2x)}',
         '@font-face{src:url("../fonts/site.woff2")}',
         '.skip{background:url(data:image/png;base64,abc)}',
       ].join(''),
@@ -22,6 +23,7 @@ describe('imageDetector', () => {
       'images/logo.png': new Uint8Array([1]),
       'images/small.png': new Uint8Array([2]),
       'images/hero.png': new Uint8Array([3]),
+      'images/hero.jxl': new Uint8Array([7]),
       'favicon.ico': new Uint8Array([4]),
       'icons/app.png': new Uint8Array([5]),
       'fonts/site.woff2': new Uint8Array([6]),
@@ -34,6 +36,7 @@ describe('imageDetector', () => {
     expect(byRaw.get('images/missing.png')).toMatchObject({ status: 'missing', resolvedPath: 'images/missing.png' });
     expect(byRaw.get('images/small.png')).toMatchObject({ status: 'ok', sourceAttr: 'srcset' });
     expect(byRaw.get('../images/hero.png')).toMatchObject({ status: 'ok', resolvedPath: 'images/hero.png' });
+    expect(byRaw.get('../images/hero.jxl')).toMatchObject({ status: 'ok', sourceTag: 'image-set', sourceAttr: 'string' });
     expect(byRaw.get('/favicon.ico')).toMatchObject({ status: 'ok', type: 'favicon' });
     expect(byRaw.get('icons/app.png')).toMatchObject({ status: 'ok', sourceKind: 'manifest' });
     expect(byRaw.get('https://cdn.example.com/remote.jpg')).toMatchObject({ status: 'remote', riskReason: 'cdn' });
@@ -123,9 +126,12 @@ describe('imageDetector', () => {
     const project = makeProject({
       'index.html': [
         '<img data-src="images/lazy.png" data-srcset="images/lazy-small.png 1x, images/lazy-large.png 2x">',
+        '<img data-original-src="images/original.heic">',
         '<video poster="images/poster.jpg"></video>',
         '<section style="background-image:url(\'images/inline-bg.webp\')"></section>',
         '<input type="image" src="images/input-icon.svg">',
+        '<object data="images/object.tiff"></object>',
+        '<embed src="images/embed.jxl">',
         '<svg><image href="images/svg-photo.png"></image></svg>',
         '<link rel="preload" as="image" href="images/preload.avif">',
         '<meta name="twitter:image" content="images/social.jpg">',
@@ -142,6 +148,9 @@ describe('imageDetector', () => {
       'images/poster.jpg': new Uint8Array([4]),
       'images/inline-bg.webp': new Uint8Array([5]),
       'images/input-icon.svg': new Uint8Array([6]),
+      'images/original.heic': new Uint8Array([13]),
+      'images/object.tiff': new Uint8Array([14]),
+      'images/embed.jxl': new Uint8Array([15]),
       'images/svg-photo.png': new Uint8Array([7]),
       'images/preload.avif': new Uint8Array([8]),
       'images/social.jpg': new Uint8Array([9]),
@@ -158,6 +167,9 @@ describe('imageDetector', () => {
     expect(byRaw.get('images/poster.jpg')).toMatchObject({ sourceTag: 'video', sourceAttr: 'poster', type: 'hero' });
     expect(byRaw.get('images/inline-bg.webp')).toMatchObject({ sourceTag: 'section', sourceAttr: 'style', extra: { cssProperty: 'background-image' } });
     expect(byRaw.get('images/input-icon.svg')).toMatchObject({ sourceTag: 'input', sourceAttr: 'src', type: 'icon' });
+    expect(byRaw.get('images/original.heic')).toMatchObject({ sourceTag: 'img', sourceAttr: 'data-original-src' });
+    expect(byRaw.get('images/object.tiff')).toMatchObject({ sourceTag: 'object', sourceAttr: 'data' });
+    expect(byRaw.get('images/embed.jxl')).toMatchObject({ sourceTag: 'embed', sourceAttr: 'src' });
     expect(byRaw.get('images/svg-photo.png')).toMatchObject({ sourceTag: 'image', sourceAttr: 'href' });
     expect(byRaw.get('images/preload.avif')).toMatchObject({ sourceTag: 'link', sourceAttr: 'href', extra: { rel: 'preload' } });
     expect(byRaw.get('images/social.jpg')).toMatchObject({ sourceTag: 'meta', sourceAttr: 'content', type: 'social' });
@@ -165,5 +177,64 @@ describe('imageDetector', () => {
     expect(byRaw.get('images/screenshot.png')).toMatchObject({ sourceKind: 'manifest', sourceTag: 'screenshot', extra: { manifestPath: 'screenshots.0.src' } });
     expect(byRaw.get('images/shortcut.png')).toMatchObject({ sourceKind: 'manifest', sourceTag: 'shortcut-icon', extra: { manifestPath: 'shortcuts.0.icons.0.src' } });
     expect(detections.some((detection) => detection.rawUrl.startsWith('data:'))).toBe(false);
+  });
+
+  it('detects conservative literal image references in JS, TS, JSX, and CSS-in-JS', async () => {
+    const project = makeProject({
+      'src/App.tsx': [
+        "import hero from '../images/hero.apng';",
+        "const icon = require('./icon.jxl');",
+        "const portrait = new URL('../images/portrait.tiff', import.meta.url);",
+        "fetch('../images/loaded.avif');",
+        "const style = `.card { background-image: url('../images/card.heic') }`;",
+        "export const App = () => <img src='../images/product.webp' />;",
+        "// const ignored = new URL('../images/commented.png', import.meta.url);",
+        "import data from '../content/data.json';",
+      ].join('\n'),
+      'images/hero.apng': new Uint8Array([1]),
+      'src/icon.jxl': new Uint8Array([2]),
+      'images/portrait.tiff': new Uint8Array([3]),
+      'images/loaded.avif': new Uint8Array([4]),
+      'images/card.heic': new Uint8Array([5]),
+      'images/product.webp': new Uint8Array([6]),
+      'content/data.json': '{}',
+    });
+
+    const detections = await detectImages(project.zip, project.entries);
+    const byRaw = new Map(detections.map((detection) => [detection.rawUrl, detection]));
+
+    expect(byRaw.get('../images/hero.apng')).toMatchObject({ sourceKind: 'code', sourceTag: 'import', status: 'ok' });
+    expect(byRaw.get('./icon.jxl')).toMatchObject({ sourceKind: 'code', sourceTag: 'require', status: 'ok' });
+    expect(byRaw.get('../images/portrait.tiff')).toMatchObject({ sourceKind: 'code', sourceTag: 'new-url', status: 'ok' });
+    expect(byRaw.get('../images/loaded.avif')).toMatchObject({ sourceKind: 'code', sourceTag: 'fetch', status: 'ok' });
+    expect(byRaw.get('../images/card.heic')).toMatchObject({ sourceKind: 'code', sourceTag: 'url', status: 'ok' });
+    expect(byRaw.get('../images/product.webp')).toMatchObject({ sourceKind: 'code', sourceTag: 'img', status: 'ok' });
+    expect(byRaw.has('../images/commented.png')).toBe(false);
+    expect(byRaw.has('../content/data.json')).toBe(false);
+  });
+
+  it('scans static visual markup inside framework template containers', async () => {
+    const project = makeProject({
+      'components/Card.vue': [
+        '<template>',
+        '  <article style="background-image:url(\'../images/card-bg.webp\')">',
+        '    <img src="../images/card.apng" srcset="../images/card@2x.jxl 2x">',
+        '    <img :src="dynamicUrl"><img src={svelteImage}>',
+        '  </article>',
+        '</template>',
+        '<script setup lang="ts">const dynamic = imageUrl</script>',
+      ].join('\n'),
+      'images/card-bg.webp': new Uint8Array([1]),
+      'images/card.apng': new Uint8Array([2]),
+      'images/card@2x.jxl': new Uint8Array([3]),
+    });
+
+    const detections = await detectImages(project.zip, project.entries);
+    const byRaw = new Map(detections.map((detection) => [detection.rawUrl, detection]));
+    expect(byRaw.get('../images/card-bg.webp')).toMatchObject({ sourceKind: 'html', sourceAttr: 'style', status: 'ok' });
+    expect(byRaw.get('../images/card.apng')).toMatchObject({ sourceKind: 'html', sourceTag: 'img', status: 'ok' });
+    expect(byRaw.get('../images/card@2x.jxl')).toMatchObject({ sourceKind: 'html', sourceAttr: 'srcset', status: 'ok' });
+    expect(byRaw.has('{svelteImage}')).toBe(false);
+    expect(byRaw.has('dynamicUrl')).toBe(false);
   });
 });

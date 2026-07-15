@@ -7,6 +7,13 @@ import type {
 } from '../types';
 import type { ZipArchiveLike } from './archiveTypes';
 import { throwIfAborted } from './cancellation';
+import { findImageSetFunctions } from './cssFunctions';
+import {
+  isScriptSourcePath,
+  isTemplateSourcePath,
+  looksLikeImagePath,
+  looksLikeKnownNonImagePath,
+} from './fileTypes';
 import { findCssCommentRanges, replaceRangesWithWhitespace } from './sourceRanges';
 import { classifyUrl, parseSrcset, resolveAgainst } from './urlResolver';
 
@@ -16,9 +23,6 @@ import { classifyUrl, parseSrcset, resolveAgainst } from './urlResolver';
  *
  * Keep these as `i` regex — many sites use mixed-case extensions.
  */
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|avif|ico|bmp)(\?|#|$)/i;
-const NON_IMAGE_EXT = /\.(woff2?|ttf|eot|otf|pdf|mp4|webm|ogg|mp3|wav|json|xml|wasm)(\?|#|$)/i;
-
 /** Concurrency for reading file text from JSZip. Keeps memory bounded. */
 const READ_CONCURRENCY = 12;
 
@@ -32,6 +36,11 @@ const HTML_IMAGE_ATTRS = [
   'data-background',
   'data-image',
   'data-image-src',
+  'data-original-src',
+  'data-src-retina',
+  'data-flickity-lazyload',
+  'data-zoom-image',
+  'data-thumb',
   'data-full',
   'data-large',
 ] as const;
@@ -62,11 +71,16 @@ export async function detectImages(
 
   const html = entries.filter((e) => !e.isDirectory && e.category === 'html');
   const css = entries.filter((e) => !e.isDirectory && e.category === 'css');
+  const code = entries.filter((e) => !e.isDirectory && isScriptSourcePath(e.path));
+  const templates = entries.filter((e) => !e.isDirectory && isTemplateSourcePath(e.path));
   const manifest = entries.filter(
-    (e) => !e.isDirectory && (e.name === 'manifest.json' || e.name.endsWith('.webmanifest')),
+    (e) => {
+      const name = e.name.toLowerCase();
+      return !e.isDirectory && (name === 'manifest.json' || name.endsWith('.webmanifest'));
+    },
   );
 
-  const texts = await readEntriesBatched(zip, [...html, ...css, ...manifest], options);
+  const texts = await readEntriesBatched(zip, [...html, ...css, ...code, ...templates, ...manifest], options);
   throwIfAborted(options.signal);
 
   const raw: Omit<ImageDetection, 'status'>[] = [];
@@ -79,6 +93,19 @@ export async function detectImages(
     throwIfAborted(options.signal);
     const text = texts.get(entry.path);
     if (text != null) raw.push(...scanCss(text, entry.path));
+  }
+  for (const entry of code) {
+    throwIfAborted(options.signal);
+    const text = texts.get(entry.path);
+    if (text != null) raw.push(...scanCode(text, entry.path));
+  }
+  for (const entry of templates) {
+    throwIfAborted(options.signal);
+    const text = texts.get(entry.path);
+    if (text != null) {
+      const exposedMarkup = text.replace(/<\/?(?:template|noscript)\b[^>]*>/gi, '');
+      raw.push(...scanHtml(exposedMarkup, entry.path, { includeInertContent: true }));
+    }
   }
   for (const entry of manifest) {
     throwIfAborted(options.signal);
@@ -178,7 +205,11 @@ function guessImageType(rawUrl: string, hints: TypeHints = {}): ImageType {
   return 'unknown';
 }
 
-function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'status'>[] {
+function scanHtml(
+  html: string,
+  sourceFile: string,
+  options: { includeInertContent?: boolean } = {},
+): Omit<ImageDetection, 'status'>[] {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const out: Omit<ImageDetection, 'status'>[] = [];
   const seen = new Set<string>();
@@ -226,14 +257,14 @@ function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'statu
   };
 
   for (const img of Array.from(doc.querySelectorAll('img'))) {
-    if (isIgnoredHtmlContext(img)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(img)) continue;
 
     for (const attr of HTML_IMAGE_ATTRS) pushAttr(img, attr, img.getAttribute(attr));
     for (const attr of HTML_SRCSET_ATTRS) pushSrcset(img, attr, img.getAttribute(attr));
   }
 
   for (const source of Array.from(doc.querySelectorAll('source'))) {
-    if (isIgnoredHtmlContext(source)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(source)) continue;
 
     const src = source.getAttribute('src');
     if (source.closest('picture') || (src && looksLikeImage(src))) pushAttr(source, 'src', src);
@@ -241,7 +272,7 @@ function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'statu
   }
 
   for (const link of Array.from(doc.querySelectorAll('link'))) {
-    if (isIgnoredHtmlContext(link)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(link)) continue;
 
     const rel = (link.getAttribute('rel') || '').toLowerCase();
     const as = (link.getAttribute('as') || '').toLowerCase();
@@ -262,7 +293,7 @@ function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'statu
   }
 
   for (const meta of Array.from(doc.querySelectorAll('meta'))) {
-    if (isIgnoredHtmlContext(meta)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(meta)) continue;
 
     const property = (meta.getAttribute('property') || meta.getAttribute('name') || '').toLowerCase();
     const content = meta.getAttribute('content');
@@ -289,24 +320,36 @@ function scanHtml(html: string, sourceFile: string): Omit<ImageDetection, 'statu
   }
 
   for (const video of Array.from(doc.querySelectorAll('video'))) {
-    if (isIgnoredHtmlContext(video)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(video)) continue;
     pushAttr(video, 'poster', video.getAttribute('poster'), 'hero');
   }
 
   for (const input of Array.from(doc.querySelectorAll('input'))) {
-    if (isIgnoredHtmlContext(input)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(input)) continue;
     if ((input.getAttribute('type') || '').toLowerCase() !== 'image') continue;
     pushAttr(input, 'src', input.getAttribute('src'), 'icon');
   }
 
+  for (const object of Array.from(doc.querySelectorAll('object'))) {
+    if (!options.includeInertContent && isIgnoredHtmlContext(object)) continue;
+    const data = object.getAttribute('data');
+    if (data && looksLikeImage(data)) pushAttr(object, 'data', data);
+  }
+
+  for (const embed of Array.from(doc.querySelectorAll('embed'))) {
+    if (!options.includeInertContent && isIgnoredHtmlContext(embed)) continue;
+    const src = embed.getAttribute('src');
+    if (src && looksLikeImage(src)) pushAttr(embed, 'src', src);
+  }
+
   for (const image of Array.from(doc.querySelectorAll('image,feimage'))) {
-    if (isIgnoredHtmlContext(image)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(image)) continue;
     pushAttr(image, 'href', image.getAttribute('href'));
     pushAttr(image, 'xlink:href', image.getAttribute('xlink:href'));
   }
 
   for (const element of Array.from(doc.querySelectorAll('[style]'))) {
-    if (isIgnoredHtmlContext(element)) continue;
+    if (!options.includeInertContent && isIgnoredHtmlContext(element)) continue;
     const style = element.getAttribute('style');
     if (!style) continue;
     const tagName = element.tagName.toLowerCase();
@@ -363,7 +406,200 @@ function scanCss(css: string, sourceFile: string): Omit<ImageDetection, 'status'
     );
   }
 
+  // CSS Images allows quoted strings directly inside image-set(), without a
+  // surrounding url(). Those candidates are common in responsive exports and
+  // need their own scan/rewrite path.
+  for (const range of findImageSetFunctions(text)) {
+    const body = text.slice(range.bodyStart, range.bodyEnd);
+    const stringRe = /(['"])([^'"]+)\1/g;
+    let stringMatch: RegExpExecArray | null;
+    while ((stringMatch = stringRe.exec(body)) !== null) {
+      if (/url\(\s*$/i.test(body.slice(0, stringMatch.index))) continue;
+      const ref = stringMatch[2].trim();
+      if (!looksLikeImage(ref) || !shouldKeepImageRef(ref)) continue;
+      const absoluteOffset = range.bodyStart + stringMatch.index;
+      const cssProperty = nearestCssProperty(text, absoluteOffset);
+      push(
+        {
+          rawUrl: ref,
+          resolvedPath: '',
+          type: guessImageType(ref, { cssProperty }),
+          sourceKind: 'css',
+          sourceFile,
+          sourceTag: 'image-set',
+          sourceAttr: 'string',
+          extra: { cssProperty },
+        },
+        absoluteOffset,
+      );
+    }
+  }
+
   return out;
+}
+
+/**
+ * Conservatively scan JavaScript/TypeScript (including JSX/TSX) for literal
+ * asset references that remain safe to rewrite without a framework parser.
+ * Dynamic expressions are intentionally excluded. Supported forms include
+ * static imports/require, `new URL(..., import.meta.url)`, fetch literals,
+ * static JSX image attributes, and CSS `url(...)` inside CSS-in-JS strings.
+ */
+function scanCode(code: string, sourceFile: string): Omit<ImageDetection, 'status'>[] {
+  const text = maskCodeComments(code);
+  const out: Omit<ImageDetection, 'status'>[] = [];
+  const seen = new Set<string>();
+  const push = (
+    rawUrl: string,
+    sourceTag: string,
+    sourceAttr: string,
+    hints: TypeHints = {},
+  ) => {
+    const ref = rawUrl.trim();
+    if (!looksLikeImagePath(ref) || !shouldKeepImageRef(ref)) return;
+    const key = `${sourceTag}|${sourceAttr}|${ref}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      rawUrl: ref,
+      resolvedPath: '',
+      type: guessImageType(ref, hints),
+      sourceKind: 'code',
+      sourceFile,
+      sourceTag,
+      sourceAttr,
+    });
+  };
+
+  const literalPatterns: Array<{
+    tag: string;
+    attr: string;
+    regex: RegExp;
+  }> = [
+    {
+      tag: 'new-url',
+      attr: 'url',
+      regex: /\bnew\s+URL\s*\(\s*(['"`])([^'"`\r\n]+)\1\s*,\s*import\.meta\.url\s*\)/g,
+    },
+    {
+      tag: 'require',
+      attr: 'source',
+      regex: /\brequire\s*\(\s*(['"`])([^'"`\r\n]+)\1\s*\)/g,
+    },
+    {
+      tag: 'import',
+      attr: 'source',
+      regex: /\bimport\s*\(\s*(['"`])([^'"`\r\n]+)\1\s*\)/g,
+    },
+    {
+      tag: 'import',
+      attr: 'source',
+      regex: /\b(?:import|export)\s+(?:[^;\r\n]*?\s+from\s+)?(['"])([^'"\r\n]+)\1/g,
+    },
+    {
+      tag: 'fetch',
+      attr: 'url',
+      regex: /\bfetch\s*\(\s*(['"`])([^'"`\r\n]+)\1/g,
+    },
+  ];
+  for (const { tag, attr, regex } of literalPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) push(match[2], tag, attr);
+  }
+
+  const jsxTagRe = /<(img|source|video|input|image|feimage|link|meta|object|embed)\b([^<>]*?)\/?\s*>/gi;
+  const jsxAttrRe = /\b(srcset|src|poster|href|xlink:href|content|data|data-src|data-lazy-src|data-original|data-original-src|style)\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*"([^"]*)"\s*\}|\{\s*'([^']*)'\s*\})/gi;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = jsxTagRe.exec(text)) !== null) {
+    const tagName = tagMatch[1].toLowerCase();
+    const attrs = tagMatch[2];
+    jsxAttrRe.lastIndex = 0;
+    let attrMatch: RegExpExecArray | null;
+    while ((attrMatch = jsxAttrRe.exec(attrs)) !== null) {
+      const attrName = attrMatch[1].toLowerCase();
+      const value = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? attrMatch[5] ?? '';
+      if (attrName === 'srcset') {
+        for (const candidate of parseSrcset(value)) {
+          push(candidate, tagName, attrName, { tagName, attrName });
+        }
+      } else if (attrName === 'style') {
+        for (const detection of scanCss(value, sourceFile)) {
+          push(detection.rawUrl, tagName, attrName, {
+            tagName,
+            attrName,
+            cssProperty: detection.extra?.cssProperty,
+          });
+        }
+      } else {
+        push(value, tagName, attrName, { tagName, attrName });
+      }
+    }
+  }
+
+  for (const detection of scanCss(text, sourceFile)) {
+    push(
+      detection.rawUrl,
+      detection.sourceTag,
+      detection.sourceAttr,
+      { cssProperty: detection.extra?.cssProperty },
+    );
+  }
+  return out;
+}
+
+/** Replace comment bytes with spaces while preserving strings, templates, and
+ * line breaks. This keeps regex offsets stable and prevents commented examples
+ * from becoming actionable detections. */
+function maskCodeComments(code: string): string {
+  const chars = [...code];
+  let quote: '"' | "'" | '`' | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < chars.length; i += 1) {
+    const char = chars[i];
+    const next = chars[i + 1];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      chars[i] = ' ';
+      chars[i + 1] = ' ';
+      i += 2;
+      while (i < chars.length && chars[i] !== '\n' && chars[i] !== '\r') {
+        chars[i] = ' ';
+        i += 1;
+      }
+      i -= 1;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      chars[i] = ' ';
+      chars[i + 1] = ' ';
+      i += 2;
+      while (i < chars.length) {
+        if (chars[i] === '*' && chars[i + 1] === '/') {
+          chars[i] = ' ';
+          chars[i + 1] = ' ';
+          i += 1;
+          break;
+        }
+        if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+        i += 1;
+      }
+    }
+  }
+  return chars.join('');
 }
 
 function scanManifest(
@@ -455,17 +691,19 @@ function scanManifest(
  * -------------------------------------------------------------------------*/
 
 function looksLikeImage(rawUrl: string): boolean {
-  // Strip query/fragment for the extension check.
-  const path = rawUrl.split('?')[0].split('#')[0];
-  return IMAGE_EXT.test(path);
+  return looksLikeImagePath(rawUrl);
 }
 
 function shouldKeepImageRef(rawUrl: string): boolean {
   const trimmed = rawUrl.trim();
   if (!trimmed) return false;
+  if (
+    /^\{[\s\S]*\}$/.test(trimmed)
+    || /\{\{|\}\}|\$\{|<\?|\?>|<%|%>/.test(trimmed)
+  ) return false;
   if (/^(data|mailto|tel|javascript):/i.test(trimmed)) return false;
   if (/^#/.test(trimmed)) return false;
-  if (NON_IMAGE_EXT.test(trimmed)) return false;
+  if (looksLikeKnownNonImagePath(trimmed)) return false;
   const kind = classifyUrl(trimmed);
   if (kind === 'remote' && /^(data|mailto|tel|javascript):/i.test(trimmed)) return false;
   return true;

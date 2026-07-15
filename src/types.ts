@@ -125,7 +125,7 @@ export type ImageRiskReason =
   | 'protocol-relative';
 
 /** Which kind of host file the reference was found in. */
-export type ImageSourceKind = 'html' | 'css' | 'manifest';
+export type ImageSourceKind = 'html' | 'css' | 'manifest' | 'code';
 
 /**
  * One image reference discovered inside the project. `resolvedPath` and

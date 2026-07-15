@@ -27,7 +27,7 @@ export interface BuildExportProgress {
  *
  * - Folder structure is preserved verbatim because we copy entries with
  *   their original paths.
- * - The exported HTML / CSS carry the patched, relative-path references
+ * - Exported source files carry the patched, relative-path references
  *   written by `applyReplacement`. There are no blob URLs and no absolute
  *   local paths, so the zip is immediately deployable.
  *
@@ -201,7 +201,7 @@ export function buildReport(patches: AppliedPatch[], detections: ImageDetection[
     );
   } else {
     lines.push(
-      `${broken.length} reference${broken.length === 1 ? '' : 's'} in the original HTML/CSS pointed at local assets that were not in the archive.${
+      `${broken.length} reference${broken.length === 1 ? '' : 's'} in the original source files pointed at local assets that were not in the archive.${
         patches.length > 0 ? ' Any that were replaced are listed under "Images replaced" above; the rest remain unresolved.' : ''
       }`,
       '',

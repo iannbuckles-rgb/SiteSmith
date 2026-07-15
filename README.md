@@ -8,8 +8,8 @@ Everything happens locally in your browser — MockupSwap never uploads your pro
 
 ## Features
 
-- **Flexible onboarding** — drop a `.zip`, a whole project **folder**, or a handful of loose web files (`.html` / `.css` / `.js` / images). Folders and loose files are packaged into a zip in-browser, so nothing needs pre-zipping. On-device parsing via `JSZip`.
-- **Image detection** for HTML `<img>` tags, CSS `url(...)` background images, SVG `xlink:href`, manifest icons, and Apple touch / favicon links.
+- **Flexible onboarding** — drop a `.zip`, `.tar`, `.tar.gz`, `.tgz`, a whole project **folder**, or loose website files. ZIP files are recognized by signature even when a download has no extension; TAR-family archives, folders, and loose files are normalized to ZIP in-browser. Source/template formats (JS/TS/JSX/TSX, Vue, Svelte, Astro, PHP, common server languages and template syntaxes), CSS preprocessors, manifests/data, fonts, media, WebAssembly/shaders, documents, 3D/design companions, and broad visual formats are retained without a server upload.
+- **Image detection** for HTML image/lazy-load attributes, `<object>` / `<embed>`, `srcset`, CSS `url(...)` and quoted `image-set(...)`, SVG references, manifest icons/screenshots, Apple touch / favicon links, framework template markup, and conservative code literals (`import`, `require`, `new URL(..., import.meta.url)`, `fetch`, and static JSX/TSX attributes).
 - **Broken-image detection** flags assets that are missing from the zip, point at remote / Manus / CDN URLs, or use `blob:` schemes that won't export.
 - **Five left-panel modes**:
   - **Images** — every detected image reference, filterable, with thumbnails and a "broken" badge.
@@ -18,7 +18,7 @@ Everything happens locally in your browser — MockupSwap never uploads your pro
   - **History** — per-patch diffs, undo/reset controls, and named checkpoints.
   - **Projects** — named browser-local project saves that can be reopened later.
 - **Per-image actions**:
-  - **Replace** with a drag-and-drop image (PNG, JPG, WebP, SVG, GIF, AVIF, BMP, ICO).
+  - **Replace** with a drag-and-drop image (including PNG/APNG, JPEG, WebP, SVG, GIF, AVIF, BMP, ICO/CUR, TIFF, HEIC/HEIF, and JPEG XL).
   - **Fit & style** — generated inline-style or CSS-class block with `object-fit`, position, border-radius, optional overlay (vignette / gradient).
   - **Remove** the broken reference entirely (preserves surrounding CSS backgrounds, drops the `<img>` for HTML).
   - **Placeholder** swaps a broken `<img>` for a labelled `<div>` that retains the original id / class / width / height.
@@ -60,8 +60,8 @@ Everything is browser-side — there is no backend, no API key, no environment f
 
 ### 1. Upload a project
 
-- Click the upload area to pick file(s), use **Choose a folder instead** for a directory, **or** drag a `.zip`, a folder, or loose web files onto the drop zone.
-- Folders and loose files are zipped in-browser first; a single `.zip` is used as-is.
+- Click the upload area to pick file(s), use **Choose a folder instead** for a directory, **or** drag a ZIP/TAR-family archive, folder, or loose web files onto the drop zone.
+- Folders, loose files, TAR, TAR.GZ, and TGZ inputs are converted to ZIP in-browser; a single valid ZIP is used as-is.
 - A worker retains the zip and performs archive-heavy work while the app scans relevant source files for image references. The Images tab populates with detected references.
 
 ### 2. Pick a detection
@@ -131,7 +131,9 @@ A summary card shows the zip size, file count, and a breakdown of replaced / bro
 ## Known limitations
 
 - **Browser-local only.** Sessions, named projects, and checkpoints use IndexedDB on this device; there is no cloud sync, collaboration, or server backup. Export important work before clearing browser data.
-- **JS references aren't auto-*detected* for swapping.** The service-worker preview *renders* JavaScript correctly (imports, `fetch`, dynamic URLs), but the image **detector** still reads HTML and CSS statically — an asset whose path is built in JS (e.g. `import.meta.url + hash + ".png"`) won't appear in the Images list. Use the **Manual replace** tab to swap those.
+- **Code detection is deliberately literal-only.** Static imports, `require`, `new URL(..., import.meta.url)`, `fetch`, CSS-in-JS URLs, and static JSX/TSX image attributes are detected. Computed paths, variables, aliases resolved only by a bundler, and runtime-generated URLs are not; use **Manual replace** for those.
+- **Source projects are not built or transpiled.** Framework/source files are retained and scanned, but the browser preview cannot compile TypeScript, JSX, Vue, Svelte, Astro, Sass, or Less. Include the project's built output (`dist`, `build`, or `out`) when a live preview is required.
+- **Intake support does not guarantee browser decoding.** MockupSwap preserves and can rewrite references for TIFF, HEIC/HEIF, JPEG XL, and other recognized assets, but whether their pixels render in the preview depends on the current browser. Exported bytes remain unchanged.
 - **Preview shows one page at a time.** The entry HTML loads first; use the page dropdown or click links in the page to switch.
 - **Limited asset re-encoding.** Optional WebP conversion supports eligible PNG/JPEG inputs; there is no resizing, AVIF output, or animation conversion.
 - **Fit & style is targeted source surgery.** HTML image styles and detected CSS rules are patched in place; it is not a visual stylesheet designer or full CSS parser.
@@ -149,7 +151,7 @@ A summary card shows the zip size, file count, and a breakdown of replaced / bro
 - **Archive expansion limits** for entry count, uncompressed bytes, individual source size, and compression ratio.
 - **Project-level diff** against the pristine upload, with file-by-file export review.
 - **AVIF/resizing pipeline** with explicit output dimensions and a user-set size budget.
-- **JavaScript asset detection** for literal imports, `new URL(..., import.meta.url)`, and common asset maps.
+- **AST-backed code detection** for computed asset maps, framework aliases, and bundler-specific transforms beyond the current conservative literal scan.
 - **Virtualized image lists** so projects with hundreds of detections can retain more than the current thumbnail cap.
 - **CSS variable extraction** — pull the Fit & style values into `:root` CSS variables so they can be tweaked in-browser.
 - **Inline image preview** of the pre-replacement vs post-replacement asset in the History panel.

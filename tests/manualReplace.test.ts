@@ -1,10 +1,33 @@
 import { describe, expect, it } from 'vitest';
 
-import { ALL_SCOPE, applyManualReplace, planManualReplace } from '../src/lib/manualReplace';
+import {
+  ALL_SCOPE,
+  applyManualReplace,
+  editableEntries,
+  isEditableExtension,
+  planManualReplace,
+} from '../src/lib/manualReplace';
 import { undoPatchById } from '../src/lib/undoStack';
 import { makeProject, zipText } from './helpers';
 
 describe('manualReplace', () => {
+  it('uses the shared text-source contract for expanded languages and templates', () => {
+    expect(isEditableExtension('Component.astro')).toBe(true);
+    expect(isEditableExtension('server.py')).toBe(true);
+    expect(isEditableExtension('theme.sass')).toBe(true);
+    expect(isEditableExtension('Dockerfile')).toBe(true);
+    expect(isEditableExtension('scene.glb')).toBe(false);
+    expect(isEditableExtension('photo.heic')).toBe(false);
+    expect(editableEntries([
+      { path: 'scene.glb', name: 'scene.glb' },
+      { path: 'src/server.py', name: 'server.py' },
+      { path: 'Dockerfile', name: 'Dockerfile' },
+    ])).toEqual([
+      { path: 'Dockerfile', name: 'Dockerfile' },
+      { path: 'src/server.py', name: 'server.py' },
+    ]);
+  });
+
   it('supports replace-once and replace-all in a single file', async () => {
     const onceProject = makeProject({ 'index.html': '<h1>Brand</h1><p>Brand</p>' });
     const once = await applyManualReplace(onceProject, {

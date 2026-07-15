@@ -82,14 +82,13 @@ export async function buildPreviewIndex(
         const content = rewriteCssBody(text, entry.path, lookupAssetToken);
         assetPayloads.push({
           token,
-          mime: TEXT_MIMES.css,
+          mime: guessMimeType(entry.name) ?? TEXT_MIMES.css,
           base64: textToBase64(content),
           text: true,
         });
       } else {
-        const mime = entry.category === 'js'
-          ? TEXT_MIMES.js
-          : guessMimeType(entry.name) ?? 'application/octet-stream';
+        const mime = guessMimeType(entry.name)
+          ?? (entry.category === 'js' ? TEXT_MIMES.js : 'application/octet-stream');
         assetPayloads.push({
           token,
           mime,

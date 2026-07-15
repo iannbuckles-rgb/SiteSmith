@@ -755,7 +755,7 @@ function EmptyState() {
       </div>
       <h2 className="preview-stage-title">Upload a website to begin</h2>
       <p className="preview-stage-body">
-        Drop a <code>.zip</code>, a project folder, or its files into the left panel.
+        Drop a ZIP/TAR archive, project folder, or loose website files into the left panel.
         MockupSwap reads and renders everything locally — nothing ever leaves this page.
       </p>
     </StageCard>

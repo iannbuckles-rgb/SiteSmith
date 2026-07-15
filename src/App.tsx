@@ -1298,7 +1298,7 @@ export default function App() {
   const handlePickReplacementFile = useCallback((file: File) => {
     if (!isSupportedImageFile(file)) {
       setReplacementError(
-        `"${file.name}" isn't an image. Only image files (PNG, JPG, WebP, GIF, SVG) can be used as replacements.`,
+        `"${file.name}" isn't a recognized image. Choose a standard raster, vector, icon, or modern web image file.`,
       );
       return;
     }
@@ -1697,7 +1697,7 @@ export default function App() {
 
   const handlePickLogoFile = useCallback((file: File) => {
     if (!isSupportedImageFile(file)) {
-      setLogoHelperError(`"${file.name}" isn't an image. Only image files (PNG, JPG, WebP, SVG, GIF) can be used as a logo.`);
+      setLogoHelperError(`"${file.name}" isn't a recognized image. Choose a raster, vector, icon, or modern web image file.`);
       return;
     }
     setLogoHelperError(null);
@@ -1953,7 +1953,7 @@ export default function App() {
   const handleApplyEditorImageFile = useCallback(async (file: File) => {
     if (!project || editorBusy || !editorSelection || editorSelection.kind !== 'image') return;
     if (!isSupportedImageFile(file)) {
-      setEditorError(`"${file.name}" isn't an image. Choose a PNG, JPG, WebP, GIF, SVG, AVIF, BMP, or icon file.`);
+      setEditorError(`"${file.name}" isn't a recognized image. Choose a raster, vector, icon, or modern web image file.`);
       return;
     }
     const rawUrl = (editorSelection.src ?? '').trim();

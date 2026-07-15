@@ -1375,7 +1375,7 @@ function ReplacementForm({
           data-testid="replacement-dropzone"
         >
           <p className="text-xs font-medium text-zinc-200">Drop replacement image</p>
-          <p className="text-[11px] text-zinc-500">or click to choose \u2014 PNG, JPG, WebP, SVG, GIF</p>
+          <p className="text-[11px] text-zinc-500">or click to choose \u2014 PNG, JPEG, WebP, SVG, AVIF, TIFF\u2026</p>
         </div>
       ) : (
         <PendingPreview

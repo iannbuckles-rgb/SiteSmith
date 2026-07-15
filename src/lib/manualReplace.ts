@@ -1,4 +1,5 @@
 import type { AppliedPatch, LoadedProject } from '../types';
+import { isTextSourcePath } from './fileTypes';
 import { sanitizeFilename, uniqueAssetPath } from './filenameSanitizer';
 import { pathRelative } from './pathRelative';
 
@@ -23,23 +24,8 @@ import { pathRelative } from './pathRelative';
  * for very long search strings.
  * ------------------------------------------------------------------------*/
 
-/** Files we consider editable in the Manual Replace dropdown. Conservative:
- *  we only show files whose extension matches a plain-text MIME class so
- *  the user isn't tempted to replace bytes inside a binary asset (which
- *  would just produce a malformed zip on export). */
-const EDITABLE_EXTENSIONS = [
-  'html', 'htm', 'css', 'scss', 'less',
-  'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx',
-  'json', 'xml', 'svg', 'txt', 'md', 'markdown',
-  'toml', 'yaml', 'yml', 'ini', 'cfg',
-  'vue', 'svelte',
-] as const;
-
 export function isEditableExtension(name: string): boolean {
-  const lastDot = name.lastIndexOf('.');
-  if (lastDot < 0) return false;
-  const ext = name.slice(lastDot + 1).toLowerCase();
-  return (EDITABLE_EXTENSIONS as readonly string[]).includes(ext);
+  return isTextSourcePath(name);
 }
 
 /** All editable files in the project, sorted by path for stable dropdown order. */
