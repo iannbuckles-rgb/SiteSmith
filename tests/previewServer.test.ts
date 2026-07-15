@@ -4,10 +4,12 @@ import { choosePrimaryHtml } from '../src/lib/previewService';
 import { isMessageFromPreviewFrame, previewSandboxPermissions } from '../src/lib/previewControls';
 import {
   augmentHtml,
+  createPreviewCache,
   deriveSiteRoot,
+  disposePreview,
   instrumentEditableMarkup,
+  previewCacheName,
   previewUrl,
-  resetPreviewCache,
   servedPreviewPath,
 } from '../src/lib/previewServer';
 
@@ -82,19 +84,22 @@ describe('previewServer.servedPreviewPath', () => {
 });
 
 describe('previewServer.previewUrl', () => {
-  it('serves under /preview/<projectId>/ and preserves directory structure', () => {
-    expect(previewUrl('project-1', 'index.html')).toBe('/preview/project-1/index.html');
-    expect(previewUrl('project-1', 'assets/app.js')).toBe('/preview/project-1/assets/app.js');
+  it('serves under an immutable project revision and preserves directory structure', () => {
+    expect(previewUrl('project-1', 'rev-7', 'index.html')).toBe('/preview/project-1/rev-7/index.html');
+    expect(previewUrl('project-1', 'rev-7', 'assets/app.js')).toBe('/preview/project-1/rev-7/assets/app.js');
+    expect(previewCacheName('project-1', 'rev-7')).toBe('mockswap-preview:project-1:rev-7');
   });
 
   it('percent-encodes unsafe characters per segment but keeps slashes', () => {
-    expect(previewUrl('project-1', 'assets/my logo.png')).toBe('/preview/project-1/assets/my%20logo.png');
-    expect(previewUrl('project-1', 'a b/c#d.css')).toBe('/preview/project-1/a%20b/c%23d.css');
+    expect(previewUrl('project 1', 'rev 7', 'assets/my logo.png'))
+      .toBe('/preview/project%201/rev%207/assets/my%20logo.png');
+    expect(previewUrl('project-1', 'rev-7', 'a b/c#d.css'))
+      .toBe('/preview/project-1/rev-7/a%20b/c%23d.css');
   });
 });
 
-describe('previewServer.resetPreviewCache', () => {
-  it('rotates the whole cache without enumerating a large set of entries', async () => {
+describe('previewServer preview cache lifecycle', () => {
+  it('creates a generation without enumerating a large set of entries', async () => {
     const cache = {
       keys: vi.fn().mockRejectedValue(new DOMException('Operation too large')),
     } as unknown as Cache;
@@ -103,13 +108,29 @@ describe('previewServer.resetPreviewCache', () => {
       open: vi.fn().mockResolvedValue(cache),
     };
 
-    await expect(resetPreviewCache(storage)).resolves.toBe(cache);
+    await expect(createPreviewCache('mockswap-preview:project-1:rev-7', storage)).resolves.toBe(cache);
 
-    expect(storage.delete).toHaveBeenCalledWith('mockswap-preview');
-    expect(storage.open).toHaveBeenCalledWith('mockswap-preview');
+    expect(storage.delete).toHaveBeenCalledWith('mockswap-preview:project-1:rev-7');
+    expect(storage.open).toHaveBeenCalledWith('mockswap-preview:project-1:rev-7');
     expect(storage.delete.mock.invocationCallOrder[0])
       .toBeLessThan(storage.open.mock.invocationCallOrder[0]);
     expect(cache.keys).not.toHaveBeenCalled();
+  });
+
+  it('revokes every compatibility URL only once when disposed', async () => {
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    await disposePreview({
+      urls: new Map([['index.html', 'blob:one'], ['about.html', 'blob:one']]),
+      htmlPaths: ['about.html', 'index.html'],
+      primaryPath: 'index.html',
+      primaryUrl: 'blob:one',
+      mode: 'compatibility',
+      cacheName: null,
+      diagnostics: [],
+    });
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledWith('blob:one');
+    revoke.mockRestore();
   });
 });
 

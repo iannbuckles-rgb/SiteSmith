@@ -34,6 +34,8 @@ serve previews from a dedicated origin before being described as isolated.
 | High | Active preview | Prefer and isolate browser-ready `dist`/`build`/`out` entries over source-root development HTML. | Dropped framework projects no longer open an uncompiled blank entry or collide with build assets. |
 | Medium | Preview diagnostics | Bridge iframe resource/runtime failures into a visible canvas banner and persistent onboarding error notifications. | Blank or degraded previews now explain the actual failure and offer a reload action. |
 | Medium | Memory | Revoke blob-preview URLs produced after an effect was cancelled. | Interrupted fallback rebuilds no longer leak object URLs. |
+| High | Preview scaling | Publish immutable revision-specific caches with bounded writes and `AbortSignal` cancellation. | Large projects avoid `Cache.keys()` limits; superseded builds cannot mix generations or leave staging caches behind. |
+| Medium | Browser coverage | Add Playwright coverage for a 500-file active site and a cancelled 1,200-file generation. | Modules, root-relative fetch/CSS, workers, project switching, cache cleanup, and export run against real Chromium and the service worker. |
 | Medium | Async correctness | Sequence Manual Replace planning requests. | Slow earlier searches cannot overwrite a newer result/count. |
 | Medium | Worker transport | Transfer mutation buffers and file-read buffers rather than clone them. | Large replacement assets cross the worker boundary with less peak memory. |
 | Medium | Worker lifecycle | Clean synchronous `postMessage` failures and late cancellation ids. | No orphan pending handlers or lifetime cancellation-id leak. |
@@ -44,16 +46,17 @@ serve previews from a dedicated origin before being described as isolated.
 
 ## Current verification
 
-- `npm test`: 20 files, 134 tests passing.
+- `npm test`: 20 files, 136 tests passing.
+- `npm run test:e2e`: 2 Chromium tests passing.
 - Coverage gate: 85% lines across the selected fragile core modules.
 - `npm run typecheck`: passing with strict/no-unused rules.
 - `npm run build`: passing; Vite emits separate worker, re-encoder, export,
   JSZip, CSS, and application chunks.
 - `git diff --check`: clean.
-- Dependency vulnerability lookup: not completed. The local sandbox blocked
-  the npm audit request because it would disclose dependency metadata to an
-  external registry without separate explicit approval. Run `npm audit` in an
-  approved CI environment.
+- `npm audit --omit=dev`: no production vulnerabilities. The full development
+  tree reports one moderate `esbuild` and one high `vite` finding; npm's fix is
+  a Vite 8 major upgrade, so it is intentionally deferred to a dedicated build
+  tooling migration rather than force-applied during preview work.
 
 ## Remaining findings and recommended refactoring
 
@@ -104,8 +107,9 @@ serve previews from a dedicated origin before being described as isolated.
 1. Add component/integration tests for autosave-after-edit, cancelled preview
    rebuild cleanup, stale manual-search suppression, worker restart, project
    restore, and same-origin versus blob sandbox flags.
-2. Add a browser smoke suite (Playwright) covering upload → preview → editor
-   change → undo → checkpoint → export at desktop and mobile widths.
+2. Expand the Playwright suite beyond its current large-preview, cancellation,
+   project-switch, and export coverage to editor change → undo → checkpoint and
+   mobile-width workflows.
 3. Add ESLint with React Hooks and accessibility rules. TypeScript catches type
    failures but not missing hook dependencies, impure updater functions, or most
    ARIA mistakes.

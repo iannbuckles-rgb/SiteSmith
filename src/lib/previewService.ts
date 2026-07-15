@@ -1,5 +1,6 @@
 import type { ZipEntryMeta } from '../types';
 import type { ZipArchiveLike } from './archiveTypes';
+import { isAbortError, throwIfAborted } from './cancellation';
 import { guessMimeType } from './mime';
 import { rewriteCssBody, rewriteHtml } from './urlRewriter';
 
@@ -18,6 +19,8 @@ export interface PreviewIndex {
   primaryPath: string;
   primaryUrl: string;
   mode: 'served' | 'compatibility';
+  /** Named CacheStorage generation for served previews; null for blob mode. */
+  cacheName: string | null;
   diagnostics: PreviewDiagnostic[];
 }
 
@@ -57,97 +60,110 @@ interface SandboxAssetPayload {
 export async function buildPreviewIndex(
   zip: ZipArchiveLike,
   entries: ZipEntryMeta[],
+  options: { signal?: AbortSignal } = {},
 ): Promise<PreviewIndex> {
+  const { signal } = options;
   const urls = new Map<string, string>();
   const htmlPaths: string[] = [];
   const diagnostics: PreviewDiagnostic[] = [];
   const assetTokens = new Map<string, string>();
   const assetPayloads: SandboxAssetPayload[] = [];
 
-  for (const entry of entries) {
-    if (entry.isDirectory || entry.category === 'html') continue;
-    assetTokens.set(entry.path, tokenForPath(entry.path));
-  }
+  try {
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.isDirectory || entry.category === 'html') continue;
+      assetTokens.set(entry.path, tokenForPath(entry.path));
+    }
 
-  const lookupAssetToken = (resolved: string): string | undefined => assetTokens.get(resolved);
+    const lookupAssetToken = (resolved: string): string | undefined => assetTokens.get(resolved);
 
-  // Pass 1: non-HTML assets. These are not exposed as parent-created blob
-  // URLs because a sandboxed iframe without allow-same-origin cannot load
-  // parent-origin blob subresources. The preview bootstrap recreates them
-  // inside the frame's opaque origin instead.
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-    if (entry.category === 'html') continue;
+    // Pass 1: non-HTML assets. These are not exposed as parent-created blob
+    // URLs because a sandboxed iframe without allow-same-origin cannot load
+    // parent-origin blob subresources. The preview bootstrap recreates them
+    // inside the frame's opaque origin instead.
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.isDirectory) continue;
+      if (entry.category === 'html') continue;
 
-    const file = zip.file(entry.path);
-    if (!file) continue;
-    const token = assetTokens.get(entry.path);
-    if (!token) continue;
+      const file = zip.file(entry.path);
+      if (!file) continue;
+      const token = assetTokens.get(entry.path);
+      if (!token) continue;
 
-    try {
-      if (entry.category === 'css') {
-        const text = await file.async('text');
-        const content = rewriteCssBody(text, entry.path, lookupAssetToken);
-        assetPayloads.push({
-          token,
-          mime: guessMimeType(entry.name) ?? TEXT_MIMES.css,
-          base64: textToBase64(content),
-          text: true,
-        });
-      } else {
-        const mime = guessMimeType(entry.name)
-          ?? (entry.category === 'js' ? TEXT_MIMES.js : 'application/octet-stream');
-        assetPayloads.push({
-          token,
-          mime,
-          base64: await file.async('base64'),
-          text: false,
+      try {
+        if (entry.category === 'css') {
+          const text = await file.async('text');
+          throwIfAborted(signal);
+          const content = rewriteCssBody(text, entry.path, lookupAssetToken);
+          assetPayloads.push({
+            token,
+            mime: guessMimeType(entry.name) ?? TEXT_MIMES.css,
+            base64: textToBase64(content),
+            text: true,
+          });
+        } else {
+          const mime = guessMimeType(entry.name)
+            ?? (entry.category === 'js' ? TEXT_MIMES.js : 'application/octet-stream');
+          const base64 = await file.async('base64');
+          throwIfAborted(signal);
+          assetPayloads.push({ token, mime, base64, text: false });
+        }
+      } catch (error) {
+        if (signal?.aborted || isAbortError(error)) throw error;
+        diagnostics.push({
+          level: 'warning',
+          message: `Preview skipped unreadable file "${entry.path}": ${errorMessage(error)}`,
         });
       }
-    } catch (error) {
-      diagnostics.push({
-        level: 'warning',
-        message: `Preview skipped unreadable file "${entry.path}": ${errorMessage(error)}`,
-      });
     }
-  }
 
-  // Pass 2: HTML. HTML files are intentionally absent from the asset-token
-  // lookup so <a href> inter-page links continue to route through the
-  // injected nav script instead of being rewritten directly to blob URLs.
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-    if (entry.category !== 'html') continue;
+    // Pass 2: HTML. HTML files are intentionally absent from the asset-token
+    // lookup so <a href> inter-page links continue to route through the
+    // injected nav script instead of being rewritten directly to blob URLs.
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      if (entry.isDirectory) continue;
+      if (entry.category !== 'html') continue;
 
-    const file = zip.file(entry.path);
-    if (!file) continue;
-    try {
-      const text = await file.async('text');
-      htmlPaths.push(entry.path);
-      const content = rewriteHtml(text, entry.path, lookupAssetToken);
-      const sandboxedDocument = buildSandboxedDocument(content, assetPayloads);
-      const blob = new Blob([sandboxedDocument], { type: TEXT_MIMES.html });
-      urls.set(entry.path, URL.createObjectURL(blob));
-    } catch (error) {
-      diagnostics.push({
-        level: 'error',
-        message: `Preview could not read page "${entry.path}": ${errorMessage(error)}`,
-      });
+      const file = zip.file(entry.path);
+      if (!file) continue;
+      try {
+        const text = await file.async('text');
+        throwIfAborted(signal);
+        htmlPaths.push(entry.path);
+        const content = rewriteHtml(text, entry.path, lookupAssetToken);
+        const sandboxedDocument = buildSandboxedDocument(content, assetPayloads);
+        const blob = new Blob([sandboxedDocument], { type: TEXT_MIMES.html });
+        urls.set(entry.path, URL.createObjectURL(blob));
+      } catch (error) {
+        if (signal?.aborted || isAbortError(error)) throw error;
+        diagnostics.push({
+          level: 'error',
+          message: `Preview could not read page "${entry.path}": ${errorMessage(error)}`,
+        });
+      }
     }
+
+    throwIfAborted(signal);
+    htmlPaths.sort((a, b) => a.localeCompare(b));
+    const primaryPath = choosePrimaryHtml(htmlPaths);
+    const primaryUrl = primaryPath ? urls.get(primaryPath) ?? '' : '';
+
+    return {
+      urls,
+      htmlPaths,
+      primaryPath,
+      primaryUrl,
+      mode: 'compatibility',
+      cacheName: null,
+      diagnostics,
+    };
+  } catch (error) {
+    for (const url of new Set(urls.values())) URL.revokeObjectURL(url);
+    throw error;
   }
-
-  htmlPaths.sort((a, b) => a.localeCompare(b));
-  const primaryPath = choosePrimaryHtml(htmlPaths);
-  const primaryUrl = primaryPath ? urls.get(primaryPath) ?? '' : '';
-
-  return {
-    urls,
-    htmlPaths,
-    primaryPath,
-    primaryUrl,
-    mode: 'compatibility',
-    diagnostics,
-  };
 }
 
 /* ---------------------------------------------------------------------------

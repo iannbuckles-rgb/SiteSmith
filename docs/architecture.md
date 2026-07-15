@@ -28,7 +28,7 @@ computed runtime asset paths.
 | Detection | DOMParser for markup; comment-aware CSS/code/manifest scanners |
 | Preview | Service worker path server, with blob-based fallback |
 | Persistence | IndexedDB sessions, named projects, and checkpoints |
-| Tests | Vitest 4 + jsdom + V8 coverage |
+| Tests | Vitest 4 + jsdom/V8 coverage; Playwright + Chromium browser smoke |
 
 Production code is strict TypeScript with unused locals/parameters rejected.
 `npm run build` runs tests, TypeScript build validation, and Vite.
@@ -138,9 +138,18 @@ silently overwrite newer tracked work.
 
 ## 6. Preview architecture and trust model
 
-The preferred path caches project responses under `/preview/<projectId>/...`.
-`public/preview-sw.js` serves them with real MIME types and maps root-relative
-requests back to the requesting preview client's project. Built projects under
+The preferred path writes each project revision to its own named cache and
+serves it under `/preview/<projectId>/<revision>/...`. Population uses a bounded
+six-file queue; the immutable URL is committed only after every write settles,
+so a frame never observes a partially published generation. A superseded build
+receives an `AbortSignal`, stops scheduling reads, deletes its staging cache,
+and never falls through to compatibility mode. Old active generations are
+released after their iframe unmounts; startup also removes caches stranded by a
+tab crash and the legacy shared cache.
+
+`public/preview-sw.js` serves revisioned entries with real MIME types and maps
+root-relative requests back to the requesting preview client's generation.
+Built projects under
 `dist/`, `build/`, or `out/` take precedence over source-root development
 entries and are cached as an isolated deploy root. Uncompiled sources outside
 that build directory therefore cannot collide with its `index.html` or assets.
@@ -215,6 +224,7 @@ prompt/confirm dialogs and are roadmap work.
 | --- | --- |
 | `npm run dev` | Vite development server |
 | `npm test` | Vitest once with coverage |
+| `npm run test:e2e` | Playwright service-worker/large-project browser suite |
 | `npm run typecheck` | strict TypeScript validation |
 | `npm run build` | tests + TypeScript build + Vite output |
 | `npm run preview` | serve the production bundle locally |
@@ -240,8 +250,8 @@ The preview service worker needs root scope. Configure SPA fallback so
 
 Current high-value risks are tracked in `PRODUCTION_READINESS.md`: same-origin
 active preview, monolithic orchestration, full-record IndexedDB listing,
-main-thread DOM scanning, missing archive expansion limits, and incomplete
-browser-level coverage.
+main-thread DOM scanning, missing archive expansion limits, and browser coverage
+that does not yet span the complete editor/checkpoint workflow or mobile layout.
 
 When extending the system:
 

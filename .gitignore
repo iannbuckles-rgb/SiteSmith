@@ -3,6 +3,8 @@ node_modules/
 dist/
 coverage/
 .test-dist/
+test-results/
+playwright-report/
 
 *.tsbuildinfo
 

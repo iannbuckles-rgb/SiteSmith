@@ -2,7 +2,7 @@
  * previewServer
  * ----------------------------------------------------------------------------
  * Renders the project through a Service Worker that serves its files from real,
- * path-based URLs (`/preview/<projectId>/…`). Because the browser then does
+ * path-based URLs (`/preview/<projectId>/<revision>/…`). Because the browser then does
  * native URL resolution, everything a blob-URL preview cannot do starts working:
  * ES-module `import`, dynamic `import()`, `fetch()`, `new URL(x, import.meta.url)`,
  * web workers, and wasm — the references a modern ("active") web project relies
@@ -18,6 +18,7 @@
 
 import type { LoadedProject, ZipEntryMeta } from '../types';
 import type { ZipArchiveLike } from './archiveTypes';
+import { isAbortError, throwIfAborted } from './cancellation';
 import { guessMimeType } from './mime';
 import {
   buildPreviewIndex,
@@ -28,7 +29,9 @@ import {
 } from './previewService';
 import { WorkerZipArchive } from './workerZipArchive';
 
-const CACHE_NAME = 'mockswap-preview';
+const LEGACY_CACHE_NAME = 'mockswap-preview';
+const CACHE_NAME_PREFIX = `${LEGACY_CACHE_NAME}:`;
+const PREVIEW_WRITE_CONCURRENCY = 6;
 const SW_URL = '/preview-sw.js';
 // Root scope so the app page is claimed and its nested preview iframe is
 // reliably controlled. The worker only ever handles `/preview/…` requests and
@@ -59,6 +62,8 @@ export function previewServerSupported(): boolean {
 }
 
 let registration: Promise<ServiceWorkerRegistration | null> | null = null;
+let staleCacheCleanup: Promise<void> | null = null;
+let nextPreviewRevision = 1;
 
 /** Register + activate the preview worker once, memoized for the session. */
 function ensureRegistered(): Promise<ServiceWorkerRegistration | null> {
@@ -70,11 +75,18 @@ function ensureRegistered(): Promise<ServiceWorkerRegistration | null> {
         // the page uncontrolled, which is exactly what breaks iframe control.
         const rootScope = new URL(SW_SCOPE, location.origin).href;
         for (const existing of await navigator.serviceWorker.getRegistrations()) {
-          if (existing.active?.scriptURL.endsWith(SW_URL) && existing.scope !== rootScope) {
+          if (isPreviewWorkerScript(existing.active?.scriptURL) && existing.scope !== rootScope) {
             await existing.unregister();
           }
         }
-        const reg = await navigator.serviceWorker.register(SW_URL, { scope: SW_SCOPE });
+        const reg = await navigator.serviceWorker.register(SW_URL, {
+          scope: SW_SCOPE,
+          updateViaCache: 'none',
+        });
+        // An older worker can remain active while this script updates. Wait for
+        // the installing generation so revisioned preview URLs never reach a
+        // worker that only understands the legacy shared cache.
+        await reg.update().catch(() => {});
         await whenActivated(reg);
         await whenControlling();
         // Confirm a worker-controlled iframe actually runs here before relying
@@ -95,18 +107,26 @@ function ensureRegistered(): Promise<ServiceWorkerRegistration | null> {
 }
 
 function whenActivated(reg: ServiceWorkerRegistration): Promise<void> {
+  const worker = reg.installing ?? reg.waiting;
+  if (!worker || worker.state === 'activated') return Promise.resolve();
   return new Promise((resolve) => {
-    if (reg.active) return resolve();
-    const worker = reg.installing ?? reg.waiting;
-    if (!worker) return resolve();
     const onChange = () => {
-      if (worker.state === 'activated') {
+      if (worker.state === 'activated' || worker.state === 'redundant') {
         worker.removeEventListener('statechange', onChange);
         resolve();
       }
     };
     worker.addEventListener('statechange', onChange);
   });
+}
+
+function isPreviewWorkerScript(scriptUrl: string | undefined): boolean {
+  if (!scriptUrl) return false;
+  try {
+    return new URL(scriptUrl).pathname === SW_URL;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -179,7 +199,10 @@ function probeIframeCapability(): Promise<boolean> {
 export async function buildPreview(
   project: LoadedProject,
   entries: ZipEntryMeta[],
+  options: { signal?: AbortSignal } = {},
 ): Promise<PreviewIndex> {
+  const { signal } = options;
+  throwIfAborted(signal);
   const zip = project.zip;
   const projectId = zip instanceof WorkerZipArchive ? zip.projectId : null;
   let compatibilityReason: string | null = null;
@@ -187,15 +210,17 @@ export async function buildPreview(
   if (projectId && previewServerSupported()) {
     try {
       const reg = await ensureRegistered();
-      if (reg) return await buildServedPreview(projectId, zip, entries);
+      throwIfAborted(signal);
+      if (reg) return await buildServedPreview(projectId, zip, entries, signal);
       compatibilityReason = 'The browser did not activate the local preview server.';
     } catch (error) {
+      if (signal?.aborted || isAbortError(error)) throw error;
       compatibilityReason = `The local preview server failed: ${errorMessage(error)}`;
     }
   } else if (projectId) {
     compatibilityReason = 'This browser context does not support the local preview server.';
   }
-  const fallback = await buildPreviewIndex(zip, entries);
+  const fallback = await buildPreviewIndex(zip, entries, { signal });
   if (compatibilityReason) {
     fallback.diagnostics.unshift({
       level: 'warning',
@@ -213,98 +238,179 @@ async function buildServedPreview(
   projectId: string,
   zip: ZipArchiveLike,
   entries: ZipEntryMeta[],
+  signal?: AbortSignal,
 ): Promise<PreviewIndex> {
-  // Only one project renders at a time; clear stale entries so a smaller or
-  // renamed project never serves ghost files from a previous upload. Drop the
-  // cache as a unit instead of enumerating every request: browsers can reject
-  // Cache.keys() with "Operation too large" for websites containing many
-  // files, which would force an otherwise valid project into compatibility
-  // mode before any new preview content was written.
-  const cache = await resetPreviewCache();
+  throwIfAborted(signal);
+  const revision = createPreviewRevision();
+  const cacheName = previewCacheName(projectId, revision);
+  await cleanupStalePreviewCaches();
+  const cache = await createPreviewCache(cacheName);
 
-  const allHtmlPaths = entries
-    .filter((e) => !e.isDirectory && e.category === 'html')
-    .map((e) => e.path)
-    .sort((a, b) => a.localeCompare(b));
+  try {
+    const allHtmlPaths = entries
+      .filter((e) => !e.isDirectory && e.category === 'html')
+      .map((e) => e.path)
+      .sort((a, b) => a.localeCompare(b));
 
-  const primaryPath = choosePrimaryHtml(allHtmlPaths);
-  // A built site (…/dist/index.html, …/build/index.html) is authored to deploy
-  // at a web root, so its assets use root-relative paths like `/assets/app.js`.
-  // Serve everything relative to that root — the entry HTML's directory — so
-  // those paths resolve instead of 404ing one level too high.
-  const siteRoot = deriveSiteRoot(primaryPath);
-  // When a project contains both development sources and a browser-ready
-  // build, treat the build directory as the complete deployed website. This
-  // prevents root source files from overwriting identically named `dist/`
-  // assets after their paths are rebased to the preview web root.
-  const buildRoot = isBuildOutputEntry(primaryPath) ? siteRoot : '';
-  const previewEntries = buildRoot
-    ? entries.filter((entry) => entry.isDirectory || entry.path.startsWith(buildRoot))
-    : entries;
-  const htmlPaths = buildRoot
-    ? allHtmlPaths.filter((path) => path.startsWith(buildRoot))
-    : allHtmlPaths;
-  const diagnostics: PreviewDiagnostic[] = [];
-  const cachedPaths = new Set<string>();
+    const primaryPath = choosePrimaryHtml(allHtmlPaths);
+    // A built site (…/dist/index.html, …/build/index.html) is authored to
+    // deploy at a web root, so its assets use root-relative paths. Include the
+    // immutable revision in that root: a fully populated generation becomes
+    // visible only when its iframe URL is committed by React.
+    const siteRoot = deriveSiteRoot(primaryPath);
+    const buildRoot = isBuildOutputEntry(primaryPath) ? siteRoot : '';
+    const previewEntries = (buildRoot
+      ? entries.filter((entry) => entry.isDirectory || entry.path.startsWith(buildRoot))
+      : entries).filter((entry) => !entry.isDirectory);
+    const htmlPaths = buildRoot
+      ? allHtmlPaths.filter((path) => path.startsWith(buildRoot))
+      : allHtmlPaths;
 
-  for (const entry of previewEntries) {
-    if (entry.isDirectory) continue;
-    const file = zip.file(entry.path);
-    if (!file) {
-      diagnostics.push({
-        level: previewDiagnosticLevel(entry),
-        message: `Preview could not find archived file "${entry.path}".`,
-      });
-      continue;
+    const results = await mapWithConcurrency(
+      previewEntries,
+      PREVIEW_WRITE_CONCURRENCY,
+      async (entry): Promise<PreviewCacheWriteResult> => {
+        throwIfAborted(signal);
+        const file = zip.file(entry.path);
+        if (!file) {
+          return {
+            diagnostic: {
+              level: previewDiagnosticLevel(entry),
+              message: `Preview could not find archived file "${entry.path}".`,
+            },
+          };
+        }
+
+        const key = previewUrl(projectId, revision, servedPreviewPath(entry.path, siteRoot));
+        try {
+          if (entry.category === 'html') {
+            const source = await file.async('text');
+            throwIfAborted(signal);
+            const html = augmentHtml(source, entry.path);
+            await cache.put(key, new Response(html, { headers: previewHeaders('text/html;charset=utf-8') }));
+          } else {
+            const blob = await file.async('blob');
+            throwIfAborted(signal);
+            const mime = guessMimeType(entry.name)
+              ?? (entry.category === 'css' ? 'text/css;charset=utf-8' : 'application/octet-stream');
+            await cache.put(key, new Response(blob, { headers: previewHeaders(mime) }));
+          }
+          throwIfAborted(signal);
+          return { cachedPath: entry.path };
+        } catch (error) {
+          if (signal?.aborted || isAbortError(error)) throw error;
+          return {
+            diagnostic: {
+              level: previewDiagnosticLevel(entry),
+              message: `Preview could not serve "${entry.path}": ${errorMessage(error)}`,
+            },
+          };
+        }
+      },
+    );
+
+    const diagnostics = results.flatMap((result) => result.diagnostic ? [result.diagnostic] : []);
+    const cachedPaths = new Set(results.flatMap((result) => result.cachedPath ? [result.cachedPath] : []));
+    if (primaryPath && !cachedPaths.has(primaryPath)) {
+      const detail = diagnostics.find((item) => item.message.includes(`"${primaryPath}"`))?.message;
+      throw new Error(detail ?? `The selected entry page "${primaryPath}" could not be served.`);
     }
 
-    const key = previewUrl(projectId, servedPreviewPath(entry.path, siteRoot));
-    try {
-      if (entry.category === 'html') {
-        // The nav bridge resolves in-page links against the ZIP path so the
-        // result keys back into `urls`; only the served location is stripped.
-        const html = augmentHtml(await file.async('text'), entry.path);
-        await cache.put(key, new Response(html, { headers: previewHeaders('text/html;charset=utf-8') }));
-      } else {
-        const blob = await file.async('blob');
-        const mime = guessMimeType(entry.name)
-          ?? (entry.category === 'css' ? 'text/css;charset=utf-8' : 'application/octet-stream');
-        await cache.put(key, new Response(blob, { headers: previewHeaders(mime) }));
-      }
-      cachedPaths.add(entry.path);
-    } catch (error) {
-      diagnostics.push({
-        level: previewDiagnosticLevel(entry),
-        message: `Preview could not serve "${entry.path}": ${errorMessage(error)}`,
-      });
+    throwIfAborted(signal);
+    const urls = new Map<string, string>();
+    for (const path of htmlPaths) {
+      urls.set(path, previewUrl(projectId, revision, servedPreviewPath(path, siteRoot)));
     }
+    const primaryUrl = primaryPath ? urls.get(primaryPath) ?? '' : '';
+
+    return {
+      urls,
+      htmlPaths,
+      primaryPath,
+      primaryUrl,
+      mode: 'served',
+      cacheName,
+      diagnostics,
+    };
+  } catch (error) {
+    await caches.delete(cacheName).catch(() => {});
+    throw error;
   }
-
-  if (primaryPath && !cachedPaths.has(primaryPath)) {
-    const detail = diagnostics.find((item) => item.message.includes(`"${primaryPath}"`))?.message;
-    throw new Error(detail ?? `The selected entry page "${primaryPath}" could not be served.`);
-  }
-
-  const urls = new Map<string, string>();
-  for (const p of htmlPaths) urls.set(p, previewUrl(projectId, servedPreviewPath(p, siteRoot)));
-  const primaryUrl = primaryPath ? urls.get(primaryPath) ?? '' : '';
-
-  return {
-    urls,
-    htmlPaths,
-    primaryPath,
-    primaryUrl,
-    mode: 'served',
-    diagnostics,
-  };
 }
 
 type PreviewCacheStorage = Pick<CacheStorage, 'delete' | 'open'>;
 
-/** Replace the served-preview cache without enumerating its file entries. */
-export async function resetPreviewCache(storage: PreviewCacheStorage = caches): Promise<Cache> {
-  await storage.delete(CACHE_NAME);
-  return storage.open(CACHE_NAME);
+interface PreviewCacheWriteResult {
+  cachedPath?: string;
+  diagnostic?: PreviewDiagnostic;
+}
+
+/** Create an empty, isolated preview generation without enumerating entries. */
+export async function createPreviewCache(
+  cacheName: string,
+  storage: PreviewCacheStorage = caches,
+): Promise<Cache> {
+  await storage.delete(cacheName);
+  return storage.open(cacheName);
+}
+
+/** Release either a served cache generation or compatibility-mode blob URLs. */
+export async function disposePreview(index: PreviewIndex): Promise<void> {
+  if (index.cacheName && typeof caches !== 'undefined') {
+    await caches.delete(index.cacheName).catch(() => {});
+    return;
+  }
+  for (const url of new Set(index.urls.values())) URL.revokeObjectURL(url);
+}
+
+export function previewCacheName(projectId: string, revision: string): string {
+  return `${CACHE_NAME_PREFIX}${projectId}:${revision}`;
+}
+
+function createPreviewRevision(): string {
+  return `${Date.now().toString(36)}-${nextPreviewRevision++}`;
+}
+
+/** Remove caches stranded by a tab crash or an older shared-cache release. */
+function cleanupStalePreviewCaches(): Promise<void> {
+  if (!staleCacheCleanup) {
+    staleCacheCleanup = (async () => {
+      const names = await caches.keys().catch(() => [LEGACY_CACHE_NAME]);
+      await Promise.all(names
+        .filter((name) => name === LEGACY_CACHE_NAME || name.startsWith(CACHE_NAME_PREFIX))
+        .map((name) => caches.delete(name).catch(() => false)));
+    })();
+  }
+  return staleCacheCleanup;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let failed = false;
+  let failure: unknown;
+
+  const worker = async () => {
+    while (!failed) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      try {
+        results[index] = await task(items[index]);
+      } catch (error) {
+        failed = true;
+        failure = error;
+      }
+    }
+  };
+
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  if (failed) throw failure;
+  return results;
 }
 
 function previewDiagnosticLevel(entry: ZipEntryMeta): PreviewDiagnostic['level'] {
@@ -336,10 +442,10 @@ export function servedPreviewPath(zipPath: string, siteRoot: string): string {
   return zipPath.startsWith(siteRoot) ? zipPath.slice(siteRoot.length) : zipPath;
 }
 
-/** Map a zip-internal path to its served URL, encoding each segment. */
-export function previewUrl(projectId: string, path: string): string {
+/** Map a zip-internal path to its immutable served-generation URL. */
+export function previewUrl(projectId: string, revision: string, path: string): string {
   const encoded = path.split('/').map(encodeURIComponent).join('/');
-  return `${PREVIEW_PREFIX}${encodeURIComponent(projectId)}/${encoded}`;
+  return `${PREVIEW_PREFIX}${encodeURIComponent(projectId)}/${encodeURIComponent(revision)}/${encoded}`;
 }
 
 function previewHeaders(contentType: string): Record<string, string> {

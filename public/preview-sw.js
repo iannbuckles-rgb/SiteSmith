@@ -7,28 +7,29 @@
  * workers, wasm — exactly like a local dev server. This is what lets modern,
  * bundled ("active") web projects render, not just flat HTML/CSS.
  *
- * Files live in the `mockswap-preview` Cache under `/preview/<id>/…`, written
- * app-side. Requests are served two ways:
+ * Each completed build lives in an immutable `mockswap-preview:<id>:<revision>`
+ * Cache under `/preview/<id>/<revision>/…`, written app-side. Requests are
+ * served two ways:
  *
- *   1. Direct — a URL already under `/preview/<id>/…` (how the browser resolves
- *      a project's RELATIVE references, since the page lives in that directory).
+ *   1. Direct — a URL already under `/preview/<id>/<revision>/…` (how the
+ *      browser resolves a project's relative references).
  *
  *   2. Root-relative — real builds emit absolute paths like `/assets/app.js` or
  *      `/_next/static/…`, which the browser resolves against the ORIGIN root and
  *      requests as bare `/assets/…`. We map those back into the project by
- *      looking at the REQUESTING CLIENT: the preview iframe's document URL stays
- *      `/preview/<id>/index.html` for the whole session, so every request it
- *      makes — including deeply nested module imports whose own URL is now
- *      root-relative — still resolves to the right project. Requests from any
- *      other client (the app itself) are passed straight through.
+ *      looking at the REQUESTING CLIENT: the preview iframe's revisioned URL
+ *      stays stable for the whole generation, so every request it makes still
+ *      resolves to the right project snapshot. Requests from any other client
+ *      (the app itself) are passed straight through.
  *
  * The worker stays a dumb static server: file set, MIME types and HTML
  * augmentation are all decided app-side at cache-population time.
  * ==========================================================================*/
 
-const CACHE_NAME = 'mockswap-preview';
+const CACHE_NAME_PREFIX = 'mockswap-preview:';
 const PREVIEW_PREFIX = '/preview/';
-const PREVIEW_DIR_RE = /^(\/preview\/[^/]+\/)/;
+const PREVIEW_DIR_RE = /^(\/preview\/[^/]+\/[^/]+\/)/;
+const PREVIEW_PATH_RE = /^\/preview\/([^/]+)\/([^/]+)\//;
 
 // Capability sentinel: lets the app confirm that a service-worker-controlled
 // iframe actually runs in this browser before committing to the served
@@ -86,7 +87,7 @@ async function resolveRequest(event, url) {
 }
 
 /**
- * Resolve the `/preview/<id>/` base for the request's originating client.
+ * Resolve the `/preview/<id>/<revision>/` base for the request's client.
  * Prefers the client's live document URL (stable across the whole preview
  * session, including nested imports); falls back to the referrer when the
  * client can't be looked up.
@@ -119,19 +120,34 @@ function probeResponse() {
 }
 
 async function serveFromCache(pathname) {
-  const cache = await caches.open(CACHE_NAME);
+  const cacheName = cacheNameForPath(pathname);
+  if (!cacheName) return notFound(pathname);
 
   // Direct hit (query string ignored so `style.css?v=2` finds `style.css`).
-  let response = await cache.match(pathname, { ignoreSearch: true });
+  let response = await caches.match(pathname, { cacheName, ignoreSearch: true });
 
   // Directory / extensionless navigation → try an index.html underneath it.
   if (!response) {
     const asIndex = pathname.replace(/\/?$/, '/') + 'index.html';
-    response = await cache.match(asIndex, { ignoreSearch: true });
+    response = await caches.match(asIndex, { cacheName, ignoreSearch: true });
   }
 
   if (response) return response;
 
+  return notFound(pathname);
+}
+
+function cacheNameForPath(pathname) {
+  const match = pathname.match(PREVIEW_PATH_RE);
+  if (!match) return null;
+  try {
+    return CACHE_NAME_PREFIX + decodeURIComponent(match[1]) + ':' + decodeURIComponent(match[2]);
+  } catch {
+    return null;
+  }
+}
+
+function notFound(pathname) {
   return new Response('Not found in preview: ' + pathname, {
     status: 404,
     headers: { 'content-type': 'text/plain;charset=utf-8' },

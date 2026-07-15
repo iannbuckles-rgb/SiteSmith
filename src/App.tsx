@@ -41,7 +41,7 @@ import { applyLogoHelper } from './lib/logoHelper';
 import { applyManualReplace, undoManualReplace } from './lib/manualReplace';
 import { undoPatchById } from './lib/undoStack';
 import { type PreviewDiagnostic, type PreviewIndex } from './lib/previewService';
-import { buildPreview } from './lib/previewServer';
+import { buildPreview, disposePreview } from './lib/previewServer';
 import { getProjectWorkerClient } from './lib/projectWorkerClient';
 import { resolveAgainst } from './lib/urlResolver';
 import { WorkerZipArchive } from './lib/workerZipArchive';
@@ -2454,14 +2454,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const createdUrls: string[] = [];
-    let cancelled = false;
+    const controller = new AbortController();
+    let builtIndex: PreviewIndex | null = null;
     if (!project) {
       setPreview(null);
       setCurrentPagePath('');
       setPreviewBuilding(false);
       setPreviewHistory({ pages: [], index: -1 });
-      return;
+      return () => controller.abort();
     }
     setPreviewBuilding(true);
     setPreview(null);
@@ -2473,16 +2473,12 @@ export default function App() {
     // would dump the user's navigation breadcrumbs).
     (async () => {
       try {
-        const index = await buildPreview(project, liveEntries);
-        // Track URLs before consulting the cancellation flag. The blob fallback
-        // may finish after a newer rebuild started; without this ordering its
-        // newly-created object URLs would never reach either cleanup path.
-        for (const url of index.urls.values()) createdUrls.push(url);
-        if (cancelled) {
-          for (const url of createdUrls) URL.revokeObjectURL(url);
-          createdUrls.length = 0;
+        const index = await buildPreview(project, liveEntries, { signal: controller.signal });
+        if (controller.signal.aborted) {
+          await disposePreview(index);
           return;
         }
+        builtIndex = index;
         setPreview(index);
         setCurrentPagePath((cur) => {
           if (cur && index.urls.has(cur)) return cur;
@@ -2503,7 +2499,7 @@ export default function App() {
           return { pages: [nextPath], index: 0 };
         });
       } catch (err) {
-        if (!cancelled) {
+        if (!controller.signal.aborted && !isAbortError(err)) {
           setPreview(null);
           setPreviewRuntimeDiagnostics([{
             level: 'error',
@@ -2511,12 +2507,18 @@ export default function App() {
           }]);
         }
       } finally {
-        if (!cancelled) setPreviewBuilding(false);
+        if (!controller.signal.aborted) setPreviewBuilding(false);
       }
     })();
     return () => {
-      cancelled = true;
-      for (const url of createdUrls) URL.revokeObjectURL(url);
+      controller.abort();
+      const staleIndex = builtIndex;
+      builtIndex = null;
+      if (staleIndex) {
+        // Let the state update that hides/unmounts the old iframe commit before
+        // deleting its immutable cache generation.
+        window.setTimeout(() => { void disposePreview(staleIndex); }, 0);
+      }
     };
   }, [project, previewRevision, liveEntries]);
 
