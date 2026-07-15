@@ -41,7 +41,7 @@ You need **Node.js 20.19+** and **npm** (required by the test/jsdom toolchain).
 ```bash
 # from the project root
 npm install
-npm run dev          # opens http://localhost:5173 with hot reload
+npm run dev          # opens http://localhost:5483 with hot reload
 ```
 
 For a production build:

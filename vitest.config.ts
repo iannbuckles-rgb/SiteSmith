@@ -23,6 +23,7 @@ export default defineConfig({
         'src/lib/undoStack.ts',
         'src/lib/urlResolver.ts',
         'src/lib/urlRewriter.ts',
+        'src/lib/vitePortDetector.ts',
       ],
       thresholds: {
         lines: 80,
