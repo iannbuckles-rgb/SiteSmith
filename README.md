@@ -9,6 +9,7 @@ Everything happens locally in your browser — MockupSwap never uploads your pro
 ## Features
 
 - **Flexible onboarding** — drop a `.zip`, `.tar`, `.tar.gz`, `.tgz`, a whole project **folder**, or loose website files. ZIP files are recognized by signature even when a download has no extension; TAR-family archives, folders, and loose files are normalized to ZIP in-browser. Source/template formats (JS/TS/JSX/TSX, Vue, Svelte, Astro, PHP, common server languages and template syntaxes), CSS preprocessors, manifests/data, fonts, media, WebAssembly/shaders, documents, 3D/design companions, and broad visual formats are retained without a server upload.
+- **Bounded archive intake** — ZIP, TAR/TGZ, folder, and loose-file onboarding share hard limits: 512 MiB input, 20,000 records, 1 GiB expanded data, 200× compression expansion (from 1 MiB upward), 16 MiB per text source, 1,024 UTF-8 bytes per path, and 255 UTF-8 bytes per path segment.
 - **Image detection** for HTML image/lazy-load attributes, `<object>` / `<embed>`, `srcset`, CSS `url(...)` and quoted `image-set(...)`, SVG references, manifest icons/screenshots, Apple touch / favicon links, framework template markup, and conservative code literals (`import`, `require`, `new URL(..., import.meta.url)`, `fetch`, and static JSX/TSX attributes).
 - **Broken-image detection** flags assets that are missing from the zip, point at remote / Manus / CDN URLs, or use `blob:` schemes that won't export.
 - **Five left-panel modes**:
@@ -36,7 +37,7 @@ Everything happens locally in your browser — MockupSwap never uploads your pro
 
 ## Run locally
 
-You need **Node.js 20.19+** and **npm** (required by the test/jsdom toolchain).
+You need **Node.js 20.19+ in the Node 20 line, or Node.js 22.12+**, and npm.
 
 ```bash
 # from the project root
@@ -143,13 +144,13 @@ A summary card shows the zip size, file count, and a breakdown of replaced / bro
 - **Blob URLs in the source are not preserved** — they always fail at runtime, so MockupSwap marks them broken by default.
 - **No project-level diff.** History shows per-patch and per-file before/after text, but there is no single whole-archive diff against the original zip.
 - **Trusted active previews only.** Service-worker previews run same-origin so modern modules and fetches work. Do not preview arbitrary hostile projects in the editor; a public untrusted-upload deployment needs a separate preview origin.
+- **Archive limits are intentionally conservative.** Intake rejects projects above 512 MiB compressed/input size, 20,000 records, 1 GiB expanded data, 200× compression expansion, 16 MiB for an individual text source, or the documented UTF-8 path limits. Split or reduce unusually large projects before onboarding them.
 
 ---
 
 ## Suggested future improvements
 
 - **Dedicated preview origin** for safely rendering arbitrary untrusted active projects.
-- **Archive expansion limits** for entry count, uncompressed bytes, individual source size, and compression ratio.
 - **Project-level diff** against the pristine upload, with file-by-file export review.
 - **AVIF/resizing pipeline** with explicit output dimensions and a user-set size budget.
 - **AST-backed code detection** for computed asset maps, framework aliases, and bundler-specific transforms beyond the current conservative literal scan.

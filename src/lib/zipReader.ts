@@ -1,6 +1,16 @@
 import JSZip from 'jszip';
 
 import type { LoadedProject, ProjectSummary, ZipEntryMeta } from '../types';
+import {
+  DEFAULT_ARCHIVE_LIMITS,
+  assertArchiveEntryCount,
+  assertArchiveInputSize,
+  assertArchivePath,
+  assertCompressionRatio,
+  assertExpandedSize,
+  assertTextSourceSize,
+  type ArchiveLimits,
+} from './archiveLimits';
 import { getCategory, normalizePath } from './fileTypes';
 
 /** Heuristics to skip junk that operating systems tuck into zips. */
@@ -17,7 +27,11 @@ function isJunkSegment(segment: string): boolean {
  * The full archive stays inside the returned `JSZip` for later export,
  * but only the lightweight `ZipEntryMeta` list is built eagerly.
  */
-export async function loadZipFromFile(file: File): Promise<LoadedProject> {
+export async function loadZipFromFile(
+  file: File,
+  limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+): Promise<LoadedProject> {
+  assertArchiveInputSize(file.size, limits);
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(file, { checkCRC32: false });
@@ -36,9 +50,14 @@ export async function loadZipFromFile(file: File): Promise<LoadedProject> {
   let jsFiles = 0;
   let imageFiles = 0;
   let filesCount = 0;
+  let archiveEntryCount = 0;
+  let archiveExpandedBytes = 0;
+  let archiveCompressedBytes = 0;
   const seenPaths = new Map<string, string>();
 
   zip.forEach((relativePath, zipEntry) => {
+    archiveEntryCount += 1;
+    assertArchiveEntryCount(archiveEntryCount, limits);
     const normalized = normalizePath(relativePath);
     if (!normalized) return;
     if (
@@ -53,12 +72,43 @@ export async function loadZipFromFile(file: File): Promise<LoadedProject> {
     if (segments.some((segment) => segment === '.' || segment === '..')) {
       throw new Error(`The archive contains an unsafe relative path: "${relativePath}".`);
     }
-    if (segments.some(isJunkSegment)) return;
+    assertArchivePath(normalized, limits);
 
     const unsafeOriginalName = (zipEntry as unknown as { unsafeOriginalName?: string }).unsafeOriginalName;
-    if (unsafeOriginalName && normalizePath(unsafeOriginalName) !== normalized) {
-      throw new Error(`The archive contains an unsafe parent path: "${unsafeOriginalName}".`);
+    if (unsafeOriginalName) {
+      const normalizedOriginalName = normalizePath(unsafeOriginalName);
+      assertArchivePath(normalizedOriginalName, limits);
+      if (normalizedOriginalName !== normalized) {
+        throw new Error(`The archive contains an unsafe parent path: "${unsafeOriginalName}".`);
+      }
     }
+
+    const baseName = segments[segments.length - 1];
+    const isDir = zipEntry.dir;
+
+    // Best-effort uncompressed size. `_data` is an internal field but is
+    // reliably populated when JSZip.loadAsync runs; fall back to 0 instead
+    // of reading bytes upfront.
+    const data = zipEntry as unknown as {
+      _data?: { uncompressedSize?: number; compressedSize?: number };
+    };
+    const size = data._data?.uncompressedSize ?? 0;
+    const compressedSize = data._data?.compressedSize ?? 0;
+    if (!isValidArchiveSize(size) || !isValidArchiveSize(compressedSize)) {
+      throw new Error(`The archive reports an invalid size for "${normalized}".`);
+    }
+
+    if (!isDir) {
+      archiveExpandedBytes += size;
+      archiveCompressedBytes += compressedSize;
+      assertExpandedSize(archiveExpandedBytes, limits);
+      assertCompressionRatio(size, compressedSize, limits);
+      assertTextSourceSize(normalized, size, limits);
+    }
+
+    // Limits and unsafe-path checks deliberately include ignored OS junk so a
+    // hostile archive cannot hide resource consumption under __MACOSX.
+    if (segments.some(isJunkSegment)) return;
 
     const foldedPath = normalized.toLocaleLowerCase('en-US');
     const priorPath = seenPaths.get(foldedPath);
@@ -68,15 +118,6 @@ export async function loadZipFromFile(file: File): Promise<LoadedProject> {
       );
     }
     seenPaths.set(foldedPath, normalized);
-
-    const baseName = segments[segments.length - 1];
-    const isDir = zipEntry.dir;
-
-    // Best-effort uncompressed size. `_data` is an internal field but is
-    // reliably populated when JSZip.loadAsync runs; fall back to 0 instead
-    // of reading bytes upfront.
-    const data = zipEntry as unknown as { _data?: { uncompressedSize?: number } };
-    const size = data._data?.uncompressedSize ?? 0;
 
     const entry: ZipEntryMeta = {
       name: baseName,
@@ -100,6 +141,8 @@ export async function loadZipFromFile(file: File): Promise<LoadedProject> {
     }
   });
 
+  assertCompressionRatio(archiveExpandedBytes, archiveCompressedBytes, limits);
+
   if (filesCount === 0) {
     throw new Error('The archive contains no usable website files.');
   }
@@ -116,4 +159,8 @@ export async function loadZipFromFile(file: File): Promise<LoadedProject> {
   };
 
   return { fileName: file.name, zip, entries, summary };
+}
+
+function isValidArchiveSize(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
 }

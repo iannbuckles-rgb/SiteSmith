@@ -22,7 +22,7 @@ computed runtime asset paths.
 | Layer | Implementation |
 | --- | --- |
 | UI | React 18 + TypeScript 5 + Tailwind CSS 4 |
-| Build | Vite 5 |
+| Build | Vite 8 (Rolldown) |
 | Archive | ZIP via JSZip 3; browser-side POSIX/GNU/PAX TAR + gzip intake |
 | Worker | Module Web Worker for zip parse, logo scan, snapshot, and export |
 | Detection | DOMParser for markup; comment-aware CSS/code/manifest scanners |
@@ -49,6 +49,7 @@ src/
 │   └── ErrorBoundary.tsx           app/panel recovery UI
 ├── lib/
 │   ├── archiveTypes.ts             JSZip-compatible abstraction
+│   ├── archiveLimits.ts            centralized archive resource policy
 │   ├── projectInput.ts              ZIP/TAR/folder/loose-file normalization
 │   ├── fileTypes.ts                 shared format and picker contracts
 │   ├── workerZipArchive.ts         main-thread worker-backed facade
@@ -83,6 +84,17 @@ relative paths, rejects case-collisions, and packages non-ZIP inputs as ZIP.
 Unknown companion files are retained when the selection contains recognizable
 website source or assets. Symlinks, devices, traversal paths, and unsupported
 archive types are not imported.
+
+All intake paths use the centralized `archiveLimits.ts` policy. Production
+defaults allow at most 512 MiB of archive input, 20,000 records (including ZIP
+directories and TAR metadata), 1 GiB of expanded data, and 200× individual or
+aggregate compression expansion once expanded data reaches 1 MiB. Text sources
+are capped at 16 MiB; archive paths are capped at 1,024 UTF-8 bytes and each
+segment at 255 UTF-8 bytes. ZIP limits are evaluated from central-directory
+metadata before entry decompression. TGZ expansion is checked for size and ratio
+for every streamed output chunk. TAR, folder, and loose-file normalization apply
+the same limits before their generated ZIP reaches the worker. Limit values are
+injectable as a complete policy for tests or deployment-specific configuration.
 
 The worker then loads JSZip and retains the base archive under a generated
 project id. It returns only file metadata, summary data, and logo candidates.
@@ -250,8 +262,8 @@ The preview service worker needs root scope. Configure SPA fallback so
 
 Current high-value risks are tracked in `PRODUCTION_READINESS.md`: same-origin
 active preview, monolithic orchestration, full-record IndexedDB listing,
-main-thread DOM scanning, missing archive expansion limits, and browser coverage
-that does not yet span the complete editor/checkpoint workflow or mobile layout.
+main-thread DOM scanning, and browser coverage that does not yet span the
+complete editor/checkpoint workflow or mobile layout.
 
 When extending the system:
 

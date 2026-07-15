@@ -3,8 +3,8 @@
 > Audit date: 2026-07-13
 > Scope: application architecture, archive lifecycle, preview isolation, persistence,
 > async correctness, performance, accessibility, test/build tooling, and documentation.
-> Baseline: 101 tests and strict TypeScript passed before the original audit;
-> 134 tests pass after the current patch set. The production build succeeds.
+> Baseline: 101 tests and strict TypeScript passed before the original audit.
+> Current verification totals are recorded below.
 
 ## Executive assessment
 
@@ -36,6 +36,8 @@ serve previews from a dedicated origin before being described as isolated.
 | Medium | Memory | Revoke blob-preview URLs produced after an effect was cancelled. | Interrupted fallback rebuilds no longer leak object URLs. |
 | High | Preview scaling | Publish immutable revision-specific caches with bounded writes and `AbortSignal` cancellation. | Large projects avoid `Cache.keys()` limits; superseded builds cannot mix generations or leave staging caches behind. |
 | Medium | Browser coverage | Add Playwright coverage for a 500-file active site and a cancelled 1,200-file generation. | Modules, root-relative fetch/CSS, workers, project switching, cache cleanup, and export run against real Chromium and the service worker. |
+| High | Archive safety | Centralize hard limits across ZIP, TAR/TGZ, folders, and loose files. | Intake rejects oversized input, record floods, expanded-data excess, compression bombs, oversized text sources, and non-portable paths before source scanning. |
+| Medium | Build tooling | Upgrade Vite 5 to Vite 8 and `@vitejs/plugin-react` 6. | The build uses Rolldown, matches the current plugin peer range, and removes the prior Vite/esbuild audit findings. |
 | Medium | Async correctness | Sequence Manual Replace planning requests. | Slow earlier searches cannot overwrite a newer result/count. |
 | Medium | Worker transport | Transfer mutation buffers and file-read buffers rather than clone them. | Large replacement assets cross the worker boundary with less peak memory. |
 | Medium | Worker lifecycle | Clean synchronous `postMessage` failures and late cancellation ids. | No orphan pending handlers or lifetime cancellation-id leak. |
@@ -46,17 +48,15 @@ serve previews from a dedicated origin before being described as isolated.
 
 ## Current verification
 
-- `npm test`: 20 files, 136 tests passing.
+- `npm test`: 21 files, 143 tests passing.
 - `npm run test:e2e`: 2 Chromium tests passing.
 - Coverage gate: 85% lines across the selected fragile core modules.
 - `npm run typecheck`: passing with strict/no-unused rules.
 - `npm run build`: passing; Vite emits separate worker, re-encoder, export,
   JSZip, CSS, and application chunks.
 - `git diff --check`: clean.
-- `npm audit --omit=dev`: no production vulnerabilities. The full development
-  tree reports one moderate `esbuild` and one high `vite` finding; npm's fix is
-  a Vite 8 major upgrade, so it is intentionally deferred to a dedicated build
-  tooling migration rather than force-applied during preview work.
+- `npm audit`: no production or development vulnerabilities after the Vite 8
+  migration.
 
 ## Remaining findings and recommended refactoring
 
@@ -91,12 +91,7 @@ serve previews from a dedicated origin before being described as isolated.
    thread. Either use a worker-safe HTML parser with strict size limits or split
    source extraction in the worker from small, scheduled DOM parse batches on
    the UI thread.
-4. **Add archive resource limits.** The 150 MB input warning is soft and based
-   on compressed file size. Add configurable limits for entry count, cumulative
-   uncompressed bytes, individual text-source bytes, path length, and compression
-   ratio before parsing/detecting. This is the defense against accidental or
-   hostile zip bombs.
-5. **Expose explicit persistence state.** Superseded generations are discarded
+4. **Expose explicit persistence state.** Superseded generations are discarded
    before writes and the browser serializes store transactions, but the UI only
    distinguishes healthy versus at-risk. A small save queue/state machine would
    expose `dirty / saving / saved / at-risk` precisely and make unload warnings

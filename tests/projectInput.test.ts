@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_ARCHIVE_LIMITS, type ArchiveLimits } from '../src/lib/archiveLimits';
 import { normalizeFileList } from '../src/lib/projectInput';
 
 /** Build a File carrying an optional directory-picker relative path. */
@@ -15,6 +16,10 @@ function makeFile(name: string, content: string, relativePath?: string): File {
 /** jsdom has no real FileList; a File[] is structurally sufficient here. */
 function asFileList(files: File[]): FileList {
   return files as unknown as FileList;
+}
+
+function limits(overrides: Partial<ArchiveLimits>): ArchiveLimits {
+  return { ...DEFAULT_ARCHIVE_LIMITS, ...overrides };
 }
 
 async function pathsInside(zipFile: File): Promise<string[]> {
@@ -56,6 +61,28 @@ function makeTar(name: string, entries: Record<string, string>): File {
   }
   chunks.push(new Uint8Array(1024));
   return new File(chunks, name, { type: 'application/x-tar' });
+}
+
+async function gzipTar(tar: File, name = 'site.tgz'): Promise<File> {
+  const tarBytes = new Uint8Array(await tar.arrayBuffer());
+  const tarStream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(tarBytes);
+      controller.close();
+    },
+  });
+  const compressor = new CompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>;
+  const gzipBytes = await new Response(tarStream.pipeThrough(compressor)).arrayBuffer();
+  const tgz = new File([gzipBytes], name, { type: 'application/gzip' });
+  Object.defineProperty(tgz, 'stream', {
+    value: () => new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(gzipBytes));
+        controller.close();
+      },
+    }),
+  });
+  return tgz;
 }
 
 describe('projectInput.normalizeFileList', () => {
@@ -132,25 +159,7 @@ describe('projectInput.normalizeFileList', () => {
   it('decompresses TGZ projects when the browser gzip stream API is available', async () => {
     if (typeof CompressionStream === 'undefined' || typeof ReadableStream === 'undefined') return;
     const tar = makeTar('site.tar', { 'site/index.html': '<h1>TGZ</h1>' });
-    const tarBytes = new Uint8Array(await tar.arrayBuffer());
-    const tarStream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(tarBytes);
-        controller.close();
-      },
-    });
-    const compressor = new CompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>;
-    const compressed = tarStream.pipeThrough(compressor);
-    const gzipBytes = await new Response(compressed).arrayBuffer();
-    const tgz = new File([gzipBytes], 'site.tgz', { type: 'application/gzip' });
-    Object.defineProperty(tgz, 'stream', {
-      value: () => new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new Uint8Array(gzipBytes));
-          controller.close();
-        },
-      }),
-    });
+    const tgz = await gzipTar(tar);
 
     const result = await normalizeFileList(asFileList([tgz]));
     if (result.kind !== 'packed') throw new Error('expected packed');
@@ -187,5 +196,47 @@ describe('projectInput.normalizeFileList', () => {
   it('rejects a selection with no recognizable web files', async () => {
     const files = [makeFile('notes', 'plain', 'stuff/notes')];
     await expect(normalizeFileList(asFileList(files))).rejects.toThrow(/no recognizable web files/i);
+  });
+
+  it('enforces entry, expanded-byte, text-source, and path limits for loose files', async () => {
+    const entries = [
+      makeFile('a.html', 'a'),
+      makeFile('b.css', 'b'),
+      makeFile('c.js', 'c'),
+    ];
+    await expect(normalizeFileList(asFileList(entries), limits({ maxEntries: 2 })))
+      .rejects.toMatchObject({ code: 'entries' });
+
+    const expanded = [makeFile('a.html', '123456'), makeFile('b.css', '123456')];
+    await expect(normalizeFileList(asFileList(expanded), limits({ maxExpandedBytes: 10 })))
+      .rejects.toMatchObject({ code: 'expanded-bytes' });
+
+    await expect(normalizeFileList(
+      asFileList([makeFile('app.js', '12345678901')]),
+      limits({ maxTextSourceBytes: 10 }),
+    )).rejects.toMatchObject({ code: 'text-source-bytes' });
+
+    await expect(normalizeFileList(
+      asFileList([makeFile('index.html', 'x', 'site/abcdefghijk.html')]),
+      limits({ maxPathBytes: 10 }),
+    )).rejects.toMatchObject({ code: 'path-bytes' });
+  });
+
+  it('counts TAR records and bounds TGZ expansion while streaming', async () => {
+    const tar = makeTar('site.tar', {
+      'site/index.html': '<h1>one</h1>',
+      'site/app.js': 'export const two = 2',
+    });
+    await expect(normalizeFileList(asFileList([tar]), limits({ maxEntries: 1 })))
+      .rejects.toMatchObject({ code: 'entries' });
+
+    if (typeof CompressionStream === 'undefined' || typeof ReadableStream === 'undefined') return;
+    const tgz = await gzipTar(tar);
+    await expect(normalizeFileList(asFileList([tgz]), limits({ maxExpandedBytes: 1_024 })))
+      .rejects.toMatchObject({ code: 'expanded-bytes' });
+    await expect(normalizeFileList(asFileList([tgz]), limits({
+      compressionRatioFloorBytes: 1,
+      maxCompressionRatio: 1,
+    }))).rejects.toMatchObject({ code: 'compression-ratio' });
   });
 });

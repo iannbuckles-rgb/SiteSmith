@@ -15,6 +15,17 @@
  * bundle only pays for the zip encoder when the user actually drops raw files.
  * -------------------------------------------------------------------------*/
 
+import {
+  ArchiveLimitError,
+  DEFAULT_ARCHIVE_LIMITS,
+  assertArchiveEntryCount,
+  assertArchiveInputSize,
+  assertArchivePath,
+  assertCompressionRatio,
+  assertExpandedSize,
+  assertTextSourceSize,
+  type ArchiveLimits,
+} from './archiveLimits';
 import { getExtension, isRecognizedProjectFile } from './fileTypes';
 import { guessMimeType } from './mime';
 
@@ -22,6 +33,11 @@ import { guessMimeType } from './mime';
 interface PathedFile {
   path: string;
   file: File;
+}
+
+interface CollectionBudget {
+  entries: number;
+  bytes: number;
 }
 
 /** The outcome of inspecting a drop / picker selection. */
@@ -45,12 +61,15 @@ function isJunkPath(path: string): boolean {
  * via the `webkitGetAsEntry` API (the only reliable way to read a dropped
  * directory) and packs the result.
  */
-export async function normalizeDataTransfer(dataTransfer: DataTransfer): Promise<NormalizedInput> {
+export async function normalizeDataTransfer(
+  dataTransfer: DataTransfer,
+  limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+): Promise<NormalizedInput> {
   const items = Array.from(dataTransfer.items ?? []).filter((it) => it.kind === 'file');
   const directFiles = Array.from(dataTransfer.files ?? []);
 
   if (directFiles.length === 1) {
-    const archive = await normalizeArchive(directFiles[0]);
+    const archive = await normalizeArchive(directFiles[0], limits);
     if (archive) return archive;
   }
 
@@ -61,12 +80,13 @@ export async function normalizeDataTransfer(dataTransfer: DataTransfer): Promise
 
   let collected: PathedFile[];
   if (entries.length > 0) {
-    collected = (await Promise.all(entries.map((entry) => walkEntry(entry, '')))).flat();
+    const budget: CollectionBudget = { entries: 0, bytes: 0 };
+    collected = (await Promise.all(entries.map((entry) => walkEntry(entry, '', budget, limits)))).flat();
   } else {
     collected = directFiles.map((file) => ({ path: file.name, file }));
   }
 
-  return packFiles(collected);
+  return packFiles(collected, undefined, limits);
 }
 
 /**
@@ -74,32 +94,37 @@ export async function normalizeDataTransfer(dataTransfer: DataTransfer): Promise
  * picker populates `webkitRelativePath`; a multi-file picker leaves it empty
  * and we fall back to the file name.
  */
-export async function normalizeFileList(fileList: FileList): Promise<NormalizedInput> {
+export async function normalizeFileList(
+  fileList: FileList,
+  limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+): Promise<NormalizedInput> {
   const files = Array.from(fileList);
   if (files.length === 1) {
-    const archive = await normalizeArchive(files[0]);
+    const archive = await normalizeArchive(files[0], limits);
     if (archive) return archive;
   }
   const collected: PathedFile[] = files.map((file) => ({
     path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
     file,
   }));
-  return packFiles(collected);
+  return packFiles(collected, undefined, limits);
 }
 
 /** Detect supported archives by both name/MIME and signature. Signature
  * detection admits archives downloaded without a useful filename while still
  * keeping ordinary single web files on the loose-file path. */
-async function normalizeArchive(file: File): Promise<NormalizedInput | null> {
+async function normalizeArchive(file: File, limits: ArchiveLimits): Promise<NormalizedInput | null> {
   const kind = await detectArchiveKind(file);
+  if (kind) assertArchiveInputSize(file.size, limits);
   if (kind === 'zip') return { kind: 'zip', file };
 
   if (kind === 'tar' || kind === 'tar-gzip') {
     const tarBytes = kind === 'tar-gzip'
-      ? await decompressGzip(file)
+      ? await decompressGzip(file, limits)
       : new Uint8Array(await file.arrayBuffer());
-    const files = extractTarFiles(tarBytes);
-    return packFiles(files, archiveBaseName(file.name));
+    assertExpandedSize(tarBytes.byteLength, limits);
+    const files = extractTarFiles(tarBytes, limits);
+    return packFiles(files, archiveBaseName(file.name), limits);
   }
 
   const extension = getExtension(file.name);
@@ -143,14 +168,35 @@ async function detectArchiveKind(file: File): Promise<ArchiveKind | null> {
   return null;
 }
 
-async function decompressGzip(file: File): Promise<Uint8Array> {
+async function decompressGzip(file: File, limits: ArchiveLimits): Promise<Uint8Array> {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('This browser cannot unpack TAR.GZ files. Repackage the project as ZIP or TAR.');
   }
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   try {
     const stream = file.stream().pipeThrough(new DecompressionStream('gzip'));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  } catch {
+    reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      assertExpandedSize(total, limits);
+      assertCompressionRatio(total, file.size, limits);
+      chunks.push(value);
+    }
+
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return output;
+  } catch (error) {
+    await reader?.cancel().catch(() => {});
+    if (error instanceof ArchiveLimitError) throw error;
     throw new Error('The gzip archive is damaged or could not be decompressed.');
   }
 }
@@ -158,9 +204,10 @@ async function decompressGzip(file: File): Promise<Uint8Array> {
 /** Minimal POSIX/GNU/PAX TAR reader. It deliberately imports regular files
  * only: symlinks, devices, and other filesystem-specific entries have no safe
  * or useful representation in a browser-authored website zip. */
-function extractTarFiles(bytes: Uint8Array): PathedFile[] {
+function extractTarFiles(bytes: Uint8Array, limits: ArchiveLimits): PathedFile[] {
   const files: PathedFile[] = [];
   let offset = 0;
+  let archiveEntryCount = 0;
   let nextLongPath: string | null = null;
   let nextPaxPath: string | null = null;
   let sawHeader = false;
@@ -169,6 +216,8 @@ function extractTarFiles(bytes: Uint8Array): PathedFile[] {
     const header = bytes.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
     sawHeader = true;
+    archiveEntryCount += 1;
+    assertArchiveEntryCount(archiveEntryCount, limits);
     validateTarChecksum(header);
 
     const name = decodeTarText(header.subarray(0, 100));
@@ -190,7 +239,8 @@ function extractTarFiles(bytes: Uint8Array): PathedFile[] {
     } else if (type === '\0' || type === '0' || type === '7') {
       const path = nextPaxPath || nextLongPath || headerPath;
       if (path) {
-        const normalizedPath = normalizeInputPath(path);
+        const normalizedPath = normalizeInputPath(path, limits);
+        assertTextSourceSize(normalizedPath, size, limits);
         const namePart = normalizedPath.split('/').pop() || 'file';
         const copy = payload.slice();
         files.push({
@@ -270,15 +320,26 @@ function archiveBaseName(name: string): string {
  * -------------------------------------------------------------------------*/
 
 /** Recursively read a dropped FileSystemEntry into a flat pathed-file list. */
-async function walkEntry(entry: FileSystemEntry, prefix: string): Promise<PathedFile[]> {
+async function walkEntry(
+  entry: FileSystemEntry,
+  prefix: string,
+  budget: CollectionBudget,
+  limits: ArchiveLimits,
+): Promise<PathedFile[]> {
   const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+  budget.entries += 1;
+  assertArchiveEntryCount(budget.entries, limits);
+  const normalizedPath = normalizeInputPath(path, limits);
   if (entry.isFile) {
     const file = await entryFile(entry as FileSystemFileEntry);
-    return [{ path, file }];
+    budget.bytes += file.size;
+    assertExpandedSize(budget.bytes, limits);
+    assertTextSourceSize(normalizedPath, file.size, limits);
+    return [{ path: normalizedPath, file }];
   }
   if (entry.isDirectory) {
     const children = await readAllDirectoryEntries((entry as FileSystemDirectoryEntry).createReader());
-    const nested = await Promise.all(children.map((child) => walkEntry(child, path)));
+    const nested = await Promise.all(children.map((child) => walkEntry(child, normalizedPath, budget, limits)));
     return nested.flat();
   }
   return [];
@@ -302,9 +363,12 @@ async function readAllDirectoryEntries(reader: FileSystemDirectoryReader): Promi
 }
 
 /** Drop OS junk and strip a single shared top-level folder ("my-site/…"). */
-function tidyPaths(files: PathedFile[]): { files: PathedFile[]; rootName: string | null } {
+function tidyPaths(
+  files: PathedFile[],
+  limits: ArchiveLimits,
+): { files: PathedFile[]; rootName: string | null } {
   const cleaned = files
-    .map((f) => ({ ...f, path: normalizeInputPath(f.path) }))
+    .map((f) => ({ ...f, path: normalizeInputPath(f.path, limits) }))
     .filter((f) => f.path && !isJunkPath(f.path));
 
   const roots = new Set(cleaned.map((f) => f.path.split('/')[0]));
@@ -339,7 +403,10 @@ function tidyPaths(files: PathedFile[]): { files: PathedFile[]; rootName: string
 
 /** Normalize a browser/TAR-provided relative path without allowing traversal
  * or control characters to become zip entry names. */
-function normalizeInputPath(rawPath: string): string {
+function normalizeInputPath(
+  rawPath: string,
+  limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+): string {
   const path = rawPath.replace(/\\/g, '/').replace(/^\/+/, '');
   if (/[\0-\x1f\x7f]/.test(path)) {
     throw new Error('The selection contains a filename with unsupported control characters.');
@@ -352,7 +419,9 @@ function normalizeInputPath(rawPath: string): string {
     }
     segments.push(segment);
   }
-  return segments.join('/');
+  const normalized = segments.join('/');
+  if (normalized) assertArchivePath(normalized, limits);
+  return normalized;
 }
 
 /** Build a deterministic, human-friendly archive name from the input. */
@@ -371,8 +440,19 @@ function deriveArchiveName(
 }
 
 /** Pack a pathed-file list into a `.zip` File via a lazily-loaded JSZip. */
-async function packFiles(rawFiles: PathedFile[], preferredName?: string): Promise<NormalizedInput> {
-  const { files, rootName } = tidyPaths(rawFiles);
+async function packFiles(
+  rawFiles: PathedFile[],
+  preferredName?: string,
+  limits: ArchiveLimits = DEFAULT_ARCHIVE_LIMITS,
+): Promise<NormalizedInput> {
+  assertArchiveEntryCount(rawFiles.length, limits);
+  let expandedBytes = 0;
+  for (const { file } of rawFiles) {
+    expandedBytes += file.size;
+    assertExpandedSize(expandedBytes, limits);
+  }
+
+  const { files, rootName } = tidyPaths(rawFiles, limits);
   if (files.length === 0) {
     throw new Error('No usable files found. Drop a website archive, project folder, or its source/assets.');
   }
@@ -381,6 +461,7 @@ async function packFiles(rawFiles: PathedFile[], preferredName?: string): Promis
       'That selection has no recognizable web files, source, or assets. Nothing can be inspected.',
     );
   }
+  for (const { path, file } of files) assertTextSourceSize(path, file.size, limits);
 
   const { default: JSZip } = await import('jszip');
   const zip = new JSZip();
@@ -391,6 +472,7 @@ async function packFiles(rawFiles: PathedFile[], preferredName?: string): Promis
     compression: 'DEFLATE',
     compressionOptions: { level: 6 },
   });
+  assertArchiveInputSize(blob.size, limits);
   const name = deriveArchiveName(files, rootName, preferredName);
   const file = new File([blob], name, { type: 'application/zip' });
   return { kind: 'packed', file, fileCount: files.length };

@@ -62,6 +62,7 @@ import { IDLE_PHASE, type Phase } from './lib/progress';
 import { Toast, type ToastData } from './components/Toast';
 import { formatBytes, isSupportedImageFile } from './lib/fileTypes';
 import { readPersistedPatches } from './lib/persistedPatch';
+import { DEFAULT_ARCHIVE_LIMITS } from './lib/archiveLimits';
 
 /** Cap concurrent thumbnail reads to keep memory bounded. */
 const THUMBNAIL_CONCURRENCY = 4;
@@ -563,7 +564,7 @@ export default function App() {
       pushToast({
         kind: 'warning',
         title: 'Large zip detected',
-        detail: `${formatBytes(file.size)} exceeds the ${formatBytes(LARGE_ZIP_WARNING_BYTES)} soft limit. MockupSwap will keep working, but detection and export can take longer.`,
+        detail: `${formatBytes(file.size)} exceeds the ${formatBytes(LARGE_ZIP_WARNING_BYTES)} warning threshold. Processing can take longer; the hard archive-input limit is ${formatBytes(DEFAULT_ARCHIVE_LIMITS.maxInputBytes)}.`,
       });
     }
     try {

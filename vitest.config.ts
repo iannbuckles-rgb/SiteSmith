@@ -10,6 +10,7 @@ export default defineConfig({
       enabled: true,
       reporter: ['text', 'html'],
       include: [
+        'src/lib/archiveLimits.ts',
         'src/lib/assetReplacer.ts',
         'src/lib/exportService.ts',
         'src/lib/fileTypes.ts',
