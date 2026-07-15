@@ -1,8 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { choosePrimaryHtml } from '../src/lib/previewService';
 import { isMessageFromPreviewFrame, previewSandboxPermissions } from '../src/lib/previewControls';
-import { augmentHtml, deriveSiteRoot, instrumentEditableMarkup, previewUrl, servedPreviewPath } from '../src/lib/previewServer';
+import {
+  augmentHtml,
+  deriveSiteRoot,
+  instrumentEditableMarkup,
+  previewUrl,
+  resetPreviewCache,
+  servedPreviewPath,
+} from '../src/lib/previewServer';
 
 describe('preview message authentication', () => {
   it('accepts only the currently mounted iframe window', () => {
@@ -83,6 +90,26 @@ describe('previewServer.previewUrl', () => {
   it('percent-encodes unsafe characters per segment but keeps slashes', () => {
     expect(previewUrl('project-1', 'assets/my logo.png')).toBe('/preview/project-1/assets/my%20logo.png');
     expect(previewUrl('project-1', 'a b/c#d.css')).toBe('/preview/project-1/a%20b/c%23d.css');
+  });
+});
+
+describe('previewServer.resetPreviewCache', () => {
+  it('rotates the whole cache without enumerating a large set of entries', async () => {
+    const cache = {
+      keys: vi.fn().mockRejectedValue(new DOMException('Operation too large')),
+    } as unknown as Cache;
+    const storage = {
+      delete: vi.fn().mockResolvedValue(true),
+      open: vi.fn().mockResolvedValue(cache),
+    };
+
+    await expect(resetPreviewCache(storage)).resolves.toBe(cache);
+
+    expect(storage.delete).toHaveBeenCalledWith('mockswap-preview');
+    expect(storage.open).toHaveBeenCalledWith('mockswap-preview');
+    expect(storage.delete.mock.invocationCallOrder[0])
+      .toBeLessThan(storage.open.mock.invocationCallOrder[0]);
+    expect(cache.keys).not.toHaveBeenCalled();
   });
 });
 

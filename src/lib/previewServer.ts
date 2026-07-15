@@ -214,10 +214,13 @@ async function buildServedPreview(
   zip: ZipArchiveLike,
   entries: ZipEntryMeta[],
 ): Promise<PreviewIndex> {
-  const cache = await caches.open(CACHE_NAME);
   // Only one project renders at a time; clear stale entries so a smaller or
-  // renamed project never serves ghost files from a previous upload.
-  await Promise.all((await cache.keys()).map((req) => cache.delete(req)));
+  // renamed project never serves ghost files from a previous upload. Drop the
+  // cache as a unit instead of enumerating every request: browsers can reject
+  // Cache.keys() with "Operation too large" for websites containing many
+  // files, which would force an otherwise valid project into compatibility
+  // mode before any new preview content was written.
+  const cache = await resetPreviewCache();
 
   const allHtmlPaths = entries
     .filter((e) => !e.isDirectory && e.category === 'html')
@@ -294,6 +297,14 @@ async function buildServedPreview(
     mode: 'served',
     diagnostics,
   };
+}
+
+type PreviewCacheStorage = Pick<CacheStorage, 'delete' | 'open'>;
+
+/** Replace the served-preview cache without enumerating its file entries. */
+export async function resetPreviewCache(storage: PreviewCacheStorage = caches): Promise<Cache> {
+  await storage.delete(CACHE_NAME);
+  return storage.open(CACHE_NAME);
 }
 
 function previewDiagnosticLevel(entry: ZipEntryMeta): PreviewDiagnostic['level'] {
