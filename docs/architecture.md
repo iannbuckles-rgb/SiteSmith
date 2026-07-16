@@ -1,7 +1,10 @@
 # MockupSwap — Architecture
 
 > Maintenance rule: update this document whenever architecture changes.
-> Last reconciled with the codebase: 2026-07-15.
+> Last reconciled with the codebase: 2026-07-16.
+
+Open architectural work is scheduled through stable IDs in `ROADMAP.md`; the
+linked GitHub issue owns its acceptance criteria and tests.
 
 ## 1. Purpose and boundaries
 

@@ -150,20 +150,15 @@ A summary card shows the zip size, file count, and a breakdown of replaced / bro
 
 ## Suggested future improvements
 
-- **Dedicated preview origin** for safely rendering arbitrary untrusted active projects.
-- **Project-level diff** against the pristine upload, with file-by-file export review.
-- **AVIF/resizing pipeline** with explicit output dimensions and a user-set size budget.
-- **AST-backed code detection** for computed asset maps, framework aliases, and bundler-specific transforms beyond the current conservative literal scan.
-- **Virtualized image lists** so projects with hundreds of detections can retain more than the current thumbnail cap.
-- **CSS variable extraction** — pull the Fit & style values into `:root` CSS variables so they can be tweaked in-browser.
-- **Inline image preview** of the pre-replacement vs post-replacement asset in the History panel.
-- **Drop-in ZIP picker** from the OS file dialog with a remembered last-folder (browser support permitting).
+Open work is tracked by stable ID in the [roadmap scheduling index](docs/ROADMAP.md).
+Each item gets detailed acceptance criteria and tests in a linked GitHub issue
+only when it is scheduled.
 
 ---
 
 ## License
 
-This project is a personal tool. Treat it as MIT-style for now; refine before any public release.
+MockupSwap is available under the [MIT License](LICENSE).
 
 ---
 

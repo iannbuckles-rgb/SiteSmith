@@ -1,0 +1,77 @@
+name: Roadmap work
+description: Schedule a roadmap item with observable acceptance criteria and tests.
+title: "[Roadmap]: "
+body:
+  - type: input
+    id: roadmap-id
+    attributes:
+      label: Roadmap ID
+      description: Use the stable ID from docs/ROADMAP.md, for example SEC-001.
+      placeholder: SEC-001
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 — production trust boundary
+        - P1 — scale and correctness
+        - P2 — maintainability and coverage
+        - P3 — product evolution
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Problem and scope
+      description: State the user-visible or architectural problem and what is explicitly out of scope.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria
+      description: List observable outcomes as Markdown checkboxes.
+      placeholder: |
+        - [ ] Observable outcome one
+        - [ ] Observable outcome two
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-tests
+    attributes:
+      label: Acceptance tests
+      description: Name the unit, integration, or browser scenarios that prove the criteria.
+      placeholder: |
+        - [ ] Add or update tests/feature.test.ts
+        - [ ] Add or update e2e/workflow.spec.ts
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification commands
+      description: Include the exact commands required before the issue can close.
+      value: |
+        npm run typecheck
+        npm test
+        npm run test:e2e
+        npm run build
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Required safeguards
+      options:
+        - label: I identified affected security, persistence, archive, worker, and cleanup invariants.
+          required: true
+        - label: I will update architecture and roadmap documentation when behavior changes.
+          required: true
