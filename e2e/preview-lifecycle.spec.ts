@@ -1,7 +1,26 @@
 import { readFile } from 'node:fs/promises';
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import JSZip from 'jszip';
+
+import { expect, test } from './fixtures';
+
+// Playwright's WebKit build accepts `cache.put()` and stores nothing: the cache
+// is created, the put resolves, and `cache.keys()` stays empty both immediately
+// and after reopening. Verified over http and https, and with a persistent
+// profile, so it is a harness limitation rather than an engine or application
+// defect — Safari itself persists Cache API entries normally. Every assertion
+// here depends on a populated preview generation, so the suite cannot run on
+// WebKit until Playwright supports it.
+//
+// WebKit consequently takes the compatibility path, which is covered by
+// e2e/compatibility-fallback.spec.ts. Every assertion in this file is specific
+// to the served pipeline — immutable /preview/ URLs, revisioned cache names, no
+// compatibility diagnostic — so none of it can be made to run there.
+test.skip(
+  ({ browserName }) => browserName === 'webkit',
+  'Playwright WebKit does not persist Cache API entries; served-path assertions cannot apply.',
+);
 
 test('serves a large active site from one immutable generation and exports it', async ({ page }) => {
   await page.goto('/');

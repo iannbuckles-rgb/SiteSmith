@@ -48,6 +48,8 @@ serve previews from a dedicated origin before being described as isolated.
 | Low | CSP | Remove unnecessary inline/blob script permission and block host form submission. | The editor shell has a narrower script policy. |
 | Low | Planning | Add stable roadmap IDs, a required acceptance-test issue form, a PR evidence checklist, and contract tests. | Scheduled work moves to linked issues without duplicating a second backlog in this audit. |
 | Low | Licensing | Add the MIT license text and package metadata. | Public distribution now has an explicit license grant. |
+| High | Preview correctness | Read the entry point back before committing a served generation (SCALE-004). | A cache that accepts writes and stores nothing now falls back with a visible notice instead of publishing an immutable URL that 404s into a blank frame. |
+| Medium | Verification | Add CI, cross-browser browser runs, and typechecked e2e sources. | The verification commands this document records are enforced on every pull request, across Chromium, Firefox, and WebKit and both supported Node lines. |
 
 ## Current verification
 
@@ -72,7 +74,7 @@ scheduled; they are not duplicated here.
 | Priority | Open IDs | Scheduling state |
 | --- | --- | --- |
 | P0 — production trust boundary | `SEC-001`–`SEC-002` | Unscheduled |
-| P1 — scale and correctness | `SCALE-001`–`SCALE-003` | Unscheduled |
+| P1 — scale and correctness | `SCALE-001`–`SCALE-003`, `SCALE-005` | Unscheduled |
 | P2 — maintainability and coverage | `QA-001`–`QA-004`, `UX-001` | Unscheduled |
 | P3 — product evolution | `PROD-001`–`PROD-008` | Unscheduled |
 

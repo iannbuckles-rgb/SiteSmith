@@ -317,6 +317,13 @@ async function buildServedPreview(
     }
 
     throwIfAborted(signal);
+    if (primaryPath) {
+      const entryKey = previewUrl(projectId, revision, servedPreviewPath(primaryPath, siteRoot));
+      if (!(await previewGenerationIsReadable(cache, entryKey))) {
+        throw new Error('The browser accepted the preview cache writes but stored nothing.');
+      }
+    }
+
     const urls = new Map<string, string>();
     for (const path of htmlPaths) {
       urls.set(path, previewUrl(projectId, revision, servedPreviewPath(path, siteRoot)));
@@ -339,6 +346,32 @@ async function buildServedPreview(
 }
 
 type PreviewCacheStorage = Pick<CacheStorage, 'delete' | 'open'>;
+export type PreviewCacheReader = Pick<Cache, 'match'>;
+
+/**
+ * Confirm a populated generation is actually readable before its immutable URL
+ * is committed.
+ *
+ * A resolved `cache.put()` is not proof of storage. Playwright's WebKit build
+ * accepts every write and persists nothing — the cache is created, each `put()`
+ * resolves, and `keys()` stays empty — and a real browser can drop writes under
+ * storage pressure or a restrictive privacy mode. Committing on the strength of
+ * the write alone publishes an immutable URL whose every request 404s, which
+ * renders as a blank frame and never reaches the blob pipeline that exists for
+ * exactly this case. Reading the entry point back turns a silent storage
+ * failure into an ordinary served-path failure, which `buildPreview` already
+ * converts into compatibility mode with a visible notice.
+ */
+export async function previewGenerationIsReadable(
+  cache: PreviewCacheReader,
+  entryKey: string,
+): Promise<boolean> {
+  try {
+    return (await cache.match(entryKey)) !== undefined;
+  } catch {
+    return false;
+  }
+}
 
 interface PreviewCacheWriteResult {
   cachedPath?: string;

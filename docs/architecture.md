@@ -156,8 +156,13 @@ silently overwrite newer tracked work.
 
 The preferred path writes each project revision to its own named cache and
 serves it under `/preview/<projectId>/<revision>/...`. Population uses a bounded
-six-file queue; the immutable URL is committed only after every write settles,
-so a frame never observes a partially published generation. A superseded build
+six-file queue; the immutable URL is committed only after every write settles
+and after the entry point has been read back out of the generation, so a frame
+never observes a partially published generation and never observes an empty one.
+A resolved `cache.put()` is not proof of storage — some environments accept
+every write and persist nothing — and committing without the readback published
+a URL whose every request 404s, which rendered as a blank frame with no route to
+the fallback. A superseded build
 receives an `AbortSignal`, stops scheduling reads, deletes its staging cache,
 and never falls through to compatibility mode. Old active generations are
 released after their iframe unmounts; startup also removes caches stranded by a
@@ -193,6 +198,17 @@ When the served path is unavailable, `previewService.ts` builds top-level blob
 documents containing frame-owned asset blobs. This fallback deliberately omits
 `allow-same-origin`, giving it an opaque origin. Object URLs are tracked and
 revoked on rebuild, cancellation, and unmount.
+
+That fallback does not currently execute. Its document is a single inline
+bootstrap script, and a `blob:` document inherits the creating page's CSP, which
+is `script-src 'self'` with no `'unsafe-inline'` and no `blob:`. The browser
+refuses the bootstrap and the frame keeps an empty wrapper document. This is not
+engine-specific; it stays invisible in Chromium and Firefox only because they
+always win the served path and never reach this code. Tracked as `SCALE-005`,
+with a `test.fixme` in `e2e/compatibility-fallback.spec.ts`. A fix has to make
+the bootstrap loadable under the shipped policy — a static same-origin script
+handed its payload after load, rather than per-project inline source, since the
+payload varies and defeats CSP hashes.
 
 ## 7. Persistence
 
@@ -251,9 +267,41 @@ prompt/confirm dialogs and are roadmap work.
 | `npm run dev` | Vite development server |
 | `npm test` | Vitest once with coverage |
 | `npm run test:e2e` | Playwright service-worker/large-project browser suite |
-| `npm run typecheck` | strict TypeScript validation |
-| `npm run build` | tests + TypeScript build + Vite output |
+| `npm run typecheck` | strict TypeScript validation, including `e2e/` |
+| `npm run build` | TypeScript build + Vite output |
+| `npm run verify` | typecheck, unit tests, build, and browser suite |
 | `npm run preview` | serve the production bundle locally |
+
+`build` no longer runs the unit suite, so CI can stage typecheck, test, build,
+and browser runs as separate jobs and a bundle still gets produced when a test
+fails. `verify` preserves the full local gate the pull request template asks
+for. TypeScript project references cover `src` + `tests` (`tsconfig.app.json`),
+build tooling (`tsconfig.node.json`), and the browser suite
+(`tsconfig.e2e.json`, which needs DOM libs for `page.evaluate` callbacks).
+
+`.github/workflows/ci.yml` runs those stages on pull requests and pushes to
+`main`. Unit tests run on both supported Node lines; the browser suite runs one
+job per engine so a single engine failing still reports the others.
+
+The browser suite runs on Chromium, Firefox, and WebKit, because the preview
+path server, its Cache API generations, and IndexedDB autosave are the parts
+most likely to diverge between engines. WebKit needs harness help, supplied by
+`e2e/fixtures.ts`:
+
+- IndexedDB Blob payloads are stored as files beside the browser profile, so
+  Playwright's default ephemeral context fails every Blob write with
+  `UnknownError: Error preparing Blob/File data to be stored in object store`.
+  The WebKit project therefore runs against an on-disk profile.
+- Cache API entries are not persisted at all by Playwright's WebKit build —
+  `cache.put()` resolves and `cache.keys()` stays empty, over both http and
+  https and with a persistent profile. Safari itself is unaffected. The served
+  suite is therefore skipped on WebKit, since every assertion in it is specific
+  to the served pipeline.
+
+That second limitation is useful rather than merely inconvenient: WebKit is the
+only engine here that reaches the compatibility path, so
+`e2e/compatibility-fallback.spec.ts` is the browser-level regression test for
+`SCALE-004` and the place `SCALE-005` is pinned.
 
 Vite emits the application, project worker, JSZip, export service, image
 re-encoder, and CSS as separate chunks.

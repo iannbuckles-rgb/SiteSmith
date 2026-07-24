@@ -10,7 +10,9 @@ export default defineConfig({
   workers: 1,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? 'github' : 'line',
+  reporter: process.env.CI
+    ? [['github'], ['html', { open: 'never' }]]
+    : [['line']],
   use: {
     baseURL,
     trace: 'retain-on-failure',
@@ -22,10 +24,21 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
+  // The preview path server, its Cache API generations, and IndexedDB autosave
+  // are the parts of MockupSwap most likely to diverge between engines, so the
+  // browser suite runs on all three rather than Chromium alone.
   projects: [
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
     },
   ],
 });

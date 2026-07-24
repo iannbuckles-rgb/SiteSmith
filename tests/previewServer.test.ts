@@ -9,8 +9,10 @@ import {
   disposePreview,
   instrumentEditableMarkup,
   previewCacheName,
+  previewGenerationIsReadable,
   previewUrl,
   servedPreviewPath,
+  type PreviewCacheReader,
 } from '../src/lib/previewServer';
 
 describe('preview message authentication', () => {
@@ -26,6 +28,31 @@ describe('preview message authentication', () => {
   it('grants same-origin only to the service-worker preview path', () => {
     expect(previewSandboxPermissions('/preview/project-1/index.html')).toContain('allow-same-origin');
     expect(previewSandboxPermissions('blob:https://app.example/abc')).not.toContain('allow-same-origin');
+  });
+});
+
+describe('previewServer.previewGenerationIsReadable', () => {
+  const entryKey = '/preview/project-1/rev-1/index.html';
+
+  it('confirms a generation whose entry point reads back', async () => {
+    const store = new Map([[entryKey, new Response('<h1>ok</h1>')]]);
+    const cache: PreviewCacheReader = { match: async (key) => store.get(String(key)) };
+    await expect(previewGenerationIsReadable(cache, entryKey)).resolves.toBe(true);
+  });
+
+  it('rejects a cache that accepts every write and stores nothing', async () => {
+    // The exact shape of Playwright's WebKit build: `put()` resolves, the cache
+    // exists, and nothing is retrievable. Committing here would publish an
+    // immutable URL that 404s on every request and render a blank frame.
+    const cache: PreviewCacheReader = { match: async () => undefined };
+    await expect(previewGenerationIsReadable(cache, entryKey)).resolves.toBe(false);
+  });
+
+  it('rejects a generation whose readback throws', async () => {
+    const cache: PreviewCacheReader = {
+      match: async () => { throw new Error('storage unavailable'); },
+    };
+    await expect(previewGenerationIsReadable(cache, entryKey)).resolves.toBe(false);
   });
 });
 
