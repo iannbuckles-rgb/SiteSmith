@@ -44,11 +44,10 @@ import { applyManualReplace, undoManualReplace } from './lib/manualReplace';
 import { undoPatchById } from './lib/undoStack';
 import { type PreviewDiagnostic, type PreviewIndex } from './lib/previewService';
 import { buildPreview, disposePreview } from './lib/previewServer';
-import { getProjectWorkerClient } from './lib/projectWorkerClient';
 import { useExport } from './hooks/useExport';
-import { usePreview, type UsePreviewCallbacks } from './hooks/usePreview';
-import { useProjectOnboarding } from './hooks/useProjectOnboarding';
-import { usePersistence } from './hooks/usePersistence';
+import { usePatches } from './hooks/usePatches';
+import { usePreview } from './hooks/usePreview';
+import { getProjectWorkerClient } from './lib/projectWorkerClient';
 import { resolveAgainst } from './lib/urlResolver';
 import { WorkerZipArchive } from './lib/workerZipArchive';
 import type {
@@ -390,12 +389,6 @@ export default function App() {
     void getProjectWorkerClient().disposeProject(projectId);
   }, []);
 
-  const onboardingCtl = useProjectOnboarding({
-    project, setIsLoading, setRestoring, setScanning, setLogoScanning, setBusyPhase, setError, setActiveMobilePane,
-  });
-  const { activeOnboardingRef: _onbRef, beginOnboardingRun: _onbBegin, ensureOnboardingActive: _onbEnsure, clearOnboardingRun: _onbClear, handleCancelOnboarding: _onbCancel } = onboardingCtl;
-
-
   const beginOnboardingRun = useCallback((kind: OnboardingKind): OnboardingRun => {
     activeOnboardingRef.current?.controller.abort();
     const run: OnboardingRun = {
@@ -474,26 +467,6 @@ export default function App() {
     if (!project) return null;
     return { ...project, entries: liveEntries };
   }, [project, liveEntries]);
-
-  const rehydrateCallbacksRef = useRef<typeof rehydrateFromBlob | undefined>(undefined);
-  const editorCallbacksRef = useRef<UsePreviewCallbacks>({});
-
-  // ------------------------------------------------------------------------
-  // Preview hook
-  // ------------------------------------------------------------------------
-
-  const previewCtl = usePreview({
-    project,
-    liveEntries,
-    previewRevision,
-    callbacks: {
-      onPreviewTextEdit: (input: any) => editorCallbacksRef.current.onPreviewTextEdit?.(input),
-      onSelectElement: () => setActiveMobilePane('right'),
-      onEditorNudge: (sel: any, dx: number, dy: number) => editorCallbacksRef.current.onEditorNudge?.(sel, dx, dy),
-      onEditorReorder: (sel: any, ref: any, place: any) => editorCallbacksRef.current.onEditorReorder?.(sel, ref, place),
-    },
-  });
-
 
   // Active = visible Images panel list = original detections minus already-patched.
   const activeDetections = useMemo<ImageDetection[]>(() => {
@@ -576,41 +549,7 @@ export default function App() {
     || bulkBusy
     || editorBusy;
 
-
-  const persistenceCtl = usePersistence({
-    project, projectMutationBusy,
-    currentPagePath: previewCtl.currentPagePath,
-    selectedDetectionKey, leftPanelMode, expanded, theme, originalBlob,
-    patchesByKeyRef, archiveMutationVersionRef,
-    pushToast, dismissToast, flushPendingEditorWrites,
-    onRehydrate: (...args: Parameters<typeof rehydrateFromBlob>) => {
-      const fn = rehydrateCallbacksRef.current;
-      if (fn) return fn(...args);
-      return Promise.resolve();
-    },
-    onDismissRestore: _onbCancel, restoring,
-    onReleaseWorker: releaseWorkerProject,
-    onSetHistoryError: setHistoryError, onSetTheme: setTheme,
-  });
-
-  const {
-    persistenceStatus: _persStatus, projectSaveBusy: _projSaveBusy, activeProjectRecordId: _projRecId,
-    checkpoints: _ckpts, checkpointsLoading: _ckptsLoading, checkpointSaveBusy: _ckptSaveBusy,
-    checkpointBusyId: _ckptBusyId, checkpointRestoreTarget: _ckptRestore,
-    restoreBanner: _restBanner, restoring: _hookRestoring, clearRestoreBanner: _clearRestBanner,
-    updateProjectRecordIdentity: _updateProjRecId,
-    handleSaveProject: _handleSaveProj, handleSaveProjectAs: _handleSaveProjAs, handleSaveCheckpoint: _handleSaveCkpt,
-    handleRequestRestoreCheckpoint: _handleReqRestoreCkpt, handleCancelRestoreCheckpoint: _handleCancelRestoreCkpt,
-    handleConfirmRestoreCheckpoint: _handleConfirmRestoreCkpt, handleDeleteCheckpoint: _handleDeleteCkpt,
-    handleRestoreSession: _handleRestoreSess, handleDismissRestore: _handleDismissRest,
-    handleOpenSavedProject: _handleOpenSaved, handleSavedProjectRenamed: _handleSavedRenamed,
-    handleSavedProjectDeleted: _handleSavedDeleted,
-  } = persistenceCtl;
-
   // ------------------------------------------------------------------------
-
-  const exportCtl = useExport({ project, patchesByKeyRef, detections, flushPendingEditorWrites, projectMutationBusy, pushToast, setBusyPhase });
-
   // Handlers
   // ------------------------------------------------------------------------
 
@@ -807,8 +746,6 @@ export default function App() {
       }
     }
   }, [beginOnboardingRun, clearOnboardingRun, dismissToast, ensureOnboardingActive, pushToast, replacePatchesByKey]);
-  rehydrateCallbacksRef.current = rehydrateFromBlob;
-
 
   const handleRestoreSession = useCallback(() => {
     if (!restoreBanner) return;
@@ -998,7 +935,13 @@ export default function App() {
     }
   }, [project, projectSaveBusy, projectMutationBusy, buildCurrentProjectSnapshot, pushToast, updateProjectRecordIdentity]);
 
+  const handleSaveProject = useCallback(() => {
+    void saveProjectToLibrary('save');
+  }, [saveProjectToLibrary]);
 
+  const handleSaveProjectAs = useCallback(() => {
+    void saveProjectToLibrary('save-as');
+  }, [saveProjectToLibrary]);
 
   const handleSaveCheckpoint = useCallback(async () => {
     if (!project || checkpointSaveBusy || projectSaveBusy) return;
@@ -2212,8 +2155,6 @@ export default function App() {
     editorNudgeQueueRef.current = editorNudgeQueueRef.current.then(applyNudge, applyNudge);
     void editorNudgeQueueRef.current;
   }, [project, pushToast, updatePatchesByKey]);
-  editorCallbacksRef.current = { onPreviewTextEdit: handleApplyPreviewTextEdit, onEditorNudge: handleApplyEditorNudge, onEditorReorder: handleApplyEditorReorder };
-
 
   const handleDeleteEditorSelection = useCallback(async () => {
     if (!project || editorBusy || !editorSelection) return;
@@ -2848,11 +2789,11 @@ export default function App() {
         project={project}
         progress={busyPhase}
         persistenceStatus={persistenceState.status}
-        projectSaveBusy={_projSaveBusy}
+        projectSaveBusy={projectSaveBusy}
         projectMutationBusy={projectMutationBusy}
         theme={theme}
-        onSaveProject={_handleSaveProj}
-        onSaveProjectAs={_handleSaveProjAs}
+        onSaveProject={handleSaveProject}
+        onSaveProjectAs={handleSaveProjectAs}
         onToggleTheme={handleToggleTheme}
         onCancelOnboarding={handleCancelOnboarding}
       />
@@ -2860,8 +2801,8 @@ export default function App() {
         <RestoreBanner
           banner={restoreBanner}
           restoring={restoring}
-          onRestore={_handleRestoreSess}
-          onDismiss={_handleDismissRest}
+          onRestore={handleRestoreSession}
+          onDismiss={handleDismissRestore}
         />
       )}
       <WorkspaceShell
@@ -2889,9 +2830,9 @@ export default function App() {
             onSelectDetection={handleSelectDetection}
             mode={leftPanelMode}
             onChangeMode={handleSetLeftPanelMode}
-            onOpenSavedProject={_handleOpenSaved}
-            onSavedProjectRenamed={_handleSavedRenamed}
-            onSavedProjectDeleted={_handleSavedDeleted}
+            onOpenSavedProject={handleOpenSavedProject}
+            onSavedProjectRenamed={handleSavedProjectRenamed}
+            onSavedProjectDeleted={handleSavedProjectDeleted}
             logoCandidates={logoCandidates}
             logoScanning={logoScanning}
             logoHelperBusy={logoHelperBusy}
@@ -2913,14 +2854,14 @@ export default function App() {
             onUndoAll={handleRequestUndoAll}
             onResetSelectedImage={handleResetSelectedImage}
             onResetProject={handleResetProject}
-            checkpoints={_ckpts}
-            checkpointsLoading={_ckptsLoading}
-            checkpointBusyId={_ckptBusyId}
-            checkpointSaveBusy={_ckptSaveBusy}
+            checkpoints={checkpoints}
+            checkpointsLoading={checkpointsLoading}
+            checkpointBusyId={checkpointBusyId}
+            checkpointSaveBusy={checkpointSaveBusy}
             canSaveCheckpoint={project !== null && !isLoading && !projectSaveBusy && !projectMutationBusy}
-            onSaveCheckpoint={_handleSaveCkpt}
+            onSaveCheckpoint={handleSaveCheckpoint}
             onRestoreCheckpoint={handleRequestRestoreCheckpoint}
-            onDeleteCheckpoint={_handleDeleteCkpt}
+            onDeleteCheckpoint={handleDeleteCheckpoint}
             hasSelectedDetection={selectedDetection !== null}
             folderBuckets={folderBuckets}
             bulkFolder={bulkFolder}
@@ -2941,10 +2882,10 @@ export default function App() {
           >
             <CenterPanel
               project={liveProject}
-              preview={previewCtl.preview}
-              previewBuilding={previewCtl.previewBuilding}
-              previewKey={previewCtl.previewKey}
-              currentPagePath={previewCtl.currentPagePath}
+              preview={preview}
+              previewBuilding={previewBuilding}
+              previewKey={previewKey}
+              currentPagePath={currentPagePath}
               onSelectPage={navigateToPage}
               onRefresh={handleRefreshPreview}
               viewport={previewViewport}
@@ -2982,12 +2923,12 @@ export default function App() {
               onApplyBrokenAction={(a) => void handleApplyBrokenAction(a)}
               onCancelBrokenAction={handleCancelBrokenAction}
               onReplaceAgain={handleReplaceAgain}
-              exportState={exportCtl.exportState}
-              exportSummary={exportCtl.exportSummary}
-              exportError={exportCtl.exportError}
+              exportState={exportState}
+              exportSummary={exportSummary}
+              exportError={exportError}
               canExport={project !== null && !isLoading && !projectMutationBusy}
               onExport={() => void handleExport()}
-              onExportAgain={exportCtl.handleExportAgain}
+              onExportAgain={handleExportAgain}
               fitStyleBusy={fitStyleBusy}
               fitStyleError={fitStyleError}
               onApplyFitStyle={(c) => void handleApplyFitStyle(c)}
@@ -2995,9 +2936,9 @@ export default function App() {
               webpReencodeEnabled={webpReencode}
               onToggleWebpReencode={handleToggleWebpReencode}
               mode={previewMode}
-              editorSelection={previewCtl.editorSelection}
-              editorBusy={previewCtl.editorBusy}
-              editorError={previewCtl.editorError}
+              editorSelection={editorSelection}
+              editorBusy={editorBusy}
+              editorError={editorError}
               onApplyEditorEdits={(edits) => void handleApplyEditorEdits(edits)}
               onApplyEditorImageFile={(file) => void handleApplyEditorImageFile(file)}
               onMoveEditorSelection={handleMoveEditorSelection}

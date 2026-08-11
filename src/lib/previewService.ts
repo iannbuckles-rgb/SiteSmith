@@ -231,24 +231,26 @@ function errorMessage(error: unknown): string {
 }
 
 function buildSandboxedDocument(html: string, assets: SandboxAssetPayload[]): string {
-  const assetsJson = escapeJsonForScript(JSON.stringify(assets));
-  const htmlLiteral = escapeForScriptLiteral(html);
-  const bootstrap = [
-    '<!doctype html><meta charset="utf-8"><script>',
-    '(function(){',
-    'var assets=' + assetsJson + ';',
-    'var html=' + htmlLiteral + ';',
-    'var urls=Object.create(null);',
-    'function bytes(b64){var bin=atob(b64);var len=bin.length;var out=new Uint8Array(len);for(var i=0;i<len;i++){out[i]=bin.charCodeAt(i);}return out;}',
-    'function text(b64){return new TextDecoder().decode(bytes(b64));}',
-    'function replaceTokens(value){for(var i=0;i<assets.length;i++){var a=assets[i];var url=urls[a.token];if(url){value=value.split(a.token).join(url);}}return value;}',
-    'for(var i=0;i<assets.length;i++){var a=assets[i];if(a.text)continue;urls[a.token]=URL.createObjectURL(new Blob([bytes(a.base64)],{type:a.mime}));}',
-    'for(var j=0;j<assets.length;j++){var b=assets[j];if(!b.text)continue;urls[b.token]=URL.createObjectURL(new Blob([replaceTokens(text(b.base64))],{type:b.mime}));}',
-    'document.open();document.write(replaceTokens(html));document.close();',
-    '})();',
-    '</script>',
+  // SCALE-005: The blob document inherits the creating page's CSP
+  // (script-src 'self'), which blocks inline scripts. Instead we emit:
+  //   1. A <base> tag so root-relative URLs resolve against the network
+  //      origin rather than the blob:-scheme URL.
+  //   2. A <script type="application/json"> data block containing the
+  //      project payload. CSP does not apply to non-executable scripts.
+  //   3. A <script src="/preview-bootstrap.js"> tag that loads the
+  //      static same-origin bootstrap, which reads the JSON block and
+  //      bootstraps the preview.
+  // < is escaped as \\u003c so literal </script> in the HTML payload
+  // cannot prematurely close the data-block script tag.
+  const payload = { assets, html };
+  const payloadJson = escapeJsonForScript(JSON.stringify(payload));
+  const baseUrl = (typeof location !== 'undefined' ? location.origin : '') + '/';
+  return [
+    '<!doctype html><meta charset="utf-8">',
+    '<base href="' + baseUrl + '">',
+    '<script id="mockswap-payload" type="application/json">' + payloadJson + '</script>',
+    '<script src="/preview-bootstrap.js?v=1"></script>',
   ].join('');
-  return bootstrap;
 }
 
 function tokenForPath(path: string): string {
@@ -276,11 +278,8 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 function escapeJsonForScript(json: string): string {
+  // Escape < so literal </script> cannot close a script tag that wraps
+  // this JSON. Using \\u003c keeps the output valid JSON (the parser
+  // restores < on read). > is escaped for symmetry only.
   return json.replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
-}
-
-function escapeForScriptLiteral(value: string): string {
-  return JSON.stringify(value)
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e');
 }

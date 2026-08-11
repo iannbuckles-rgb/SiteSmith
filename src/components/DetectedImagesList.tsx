@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 
 import { isBroken } from '../lib/assetReplacer';
 import type { ImageDetection, ImageStatus, ImageType } from '../types';
@@ -518,8 +518,6 @@ function BulkReplaceZone({
     if (!isSupportedImageFile(file)) return;
     onPickBulkFile(file);
   };
-
-  useEffect(() => { return () => { /* nothing to clean up here */ }; }, []);
 
   const canApply = !!pendingFile && scopedDetectionCount > 0 && !busy;
 

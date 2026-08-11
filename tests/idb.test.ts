@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  clearSession,
   deleteCheckpoint,
   deleteProjectRecord,
   listCheckpoints,
@@ -12,6 +13,7 @@ import {
   renameProjectRecord,
   saveCheckpoint,
   saveProjectRecord,
+  saveSession,
   type Checkpoint,
   type PersistedProjectMeta,
   type PersistedSelection,
@@ -21,7 +23,7 @@ import {
 
 const DB_NAME = 'mockswap';
 
-describe('idb project records', () => {
+describe('idb persistence', () => {
   let fakeIndexedDb: FakeIndexedDb;
 
   beforeEach(() => {
@@ -32,6 +34,57 @@ describe('idb project records', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  describe('session save / load (restore banner contract)', () => {
+    it('round-trips a session with the shape the restore banner expects', async () => {
+      const session = makePersistedSession();
+      const outcome = await saveSession(session);
+      expect(outcome).toBe('ok');
+
+      const loaded = await loadSession();
+      expect(loaded).not.toBeNull();
+      // Hook expects these fields for RestoreBanner:
+      expect(loaded!.projectMeta?.fileName).toBe('session.zip');
+      expect(loaded!.mutatedZipBlob).toBeInstanceOf(Blob);
+      expect(loaded!.patches).toBeInstanceOf(Array);
+      expect(loaded!.selection).not.toBeNull();
+      expect(loaded!.theme).toBe('dark');
+      expect(loaded!.savedAt).toBe(50);
+    });
+
+    it('returns null when no session exists (no banner)', async () => {
+      const loaded = await loadSession();
+      expect(loaded).toBeNull();
+    });
+
+    it('loadSession preserves theme for boot restoration', async () => {
+      const session = makePersistedSession({ theme: 'light' });
+      await saveSession(session);
+      const loaded = await loadSession();
+      expect(loaded?.theme).toBe('light');
+    });
+
+    it('loadSession preserves selection for boot restoration', async () => {
+      const sel: PersistedSelection = {
+        currentPagePath: 'about.html',
+        selectedDetectionKey: 'img-1',
+        leftPanelMode: 'history',
+        expandedFolders: ['assets', 'css'],
+      };
+      const session = makePersistedSession({ selection: sel });
+      await saveSession(session);
+      const loaded = await loadSession();
+      expect(loaded?.selection).toEqual(sel);
+    });
+
+    it('clears the recovery session so banner is not shown on next load', async () => {
+      await saveSession(makePersistedSession());
+      await clearSession();
+      expect(await loadSession()).toBeNull();
+    });
+  });
+
+  describe('project records', () => {
 
   it('creates the projects store during v2 upgrade without touching existing sessions data', async () => {
     const session = makePersistedSession();
@@ -147,9 +200,10 @@ describe('idb project records', () => {
 
     await expect(loadCheckpoint('checkpoint-1')).resolves.toBeNull();
   });
+  });
 });
 
-function makePersistedSession(): PersistedSession {
+function makePersistedSession(overrides: Partial<PersistedSession> = {}): PersistedSession {
   return {
     schemaVersion: PERSISTENCE_SCHEMA_VERSION,
     projectMeta: makeProjectMeta('session.zip'),
@@ -159,6 +213,7 @@ function makePersistedSession(): PersistedSession {
     selection: makeSelection(),
     theme: 'dark',
     savedAt: 50,
+    ...overrides,
   };
 }
 

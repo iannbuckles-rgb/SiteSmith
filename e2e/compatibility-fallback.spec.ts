@@ -60,17 +60,13 @@ test('abandons an unstorable generation instead of committing it', async ({ page
   expect(download.suggestedFilename()).toBe('fallback-mockupswap.zip');
 });
 
-// SCALE-005. The compatibility document is a single inline bootstrap script,
-// and a blob: document inherits the creating page's CSP — which is
-// `script-src 'self'`, with no 'unsafe-inline' and no blob:. WebKit reports
-// "Refused to execute a script because its hash, its nonce, or 'unsafe-inline'
-// does not appear in the script-src directive", the bootstrap never runs, and
-// the frame keeps the empty wrapper document.
-//
-// This is not WebKit-specific: the fallback cannot execute under the shipped
-// policy in any engine. It stays invisible in Chromium and Firefox only because
-// they always win the served path and never reach this code.
-test.fixme('renders the project in compatibility mode', async ({ page }) => {
+// SCALE-005 (fixed). The compatibility document uses a static same-origin
+// bootstrap script loaded via <script src="/preview-bootstrap.js"> plus a
+// <script type="application/json"> data block for the project payload.
+// Since the data block is non-executable it is not subject to CSP, and the
+// static script satisfies script-src 'self'. The <base> tag ensures root-
+// relative script/src paths resolve against the network origin.
+test('renders the project in compatibility mode', async ({ page }) => {
   await uploadFallbackProject(page);
 
   const preview = page.frameLocator('[data-testid="preview-iframe"]');

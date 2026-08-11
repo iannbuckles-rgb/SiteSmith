@@ -50,9 +50,10 @@
 import type { LeftPanelMode } from '../types';
 
 const DB_NAME = 'mockswap';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = 'sessions';
 const PROJECTS_STORE = 'projects';
+const PROJECT_SUMMARIES_STORE = 'projectSummaries';
 const CHECKPOINTS_STORE = 'checkpoints';
 const CHECKPOINTS_PROJECT_INDEX = 'projectId';
 const SCHEMA_VERSION = 1;
@@ -150,6 +151,12 @@ function openDb(): Promise<IDBDatabase> {
           }
         }
       }
+      // v4: separate blob-free summaries store so listProjects() never
+      // materialises gigabyte zip blobs just to show project names.
+      if (!db.objectStoreNames.contains(PROJECT_SUMMARIES_STORE)) {
+        db.createObjectStore(PROJECT_SUMMARIES_STORE, { keyPath: 'id' });
+        populateProjectSummaries(req);
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('Failed to open IndexedDB'));
@@ -241,8 +248,7 @@ export async function listProjects(): Promise<SavedProjectSummary[]> {
   const db = await getDb();
   if (!db) return [];
   try {
-    const projects = await readProjects(db);
-    return projects.sort((a, b) => b.savedAt - a.savedAt).map(stripProjectBlobs);
+    return await readProjectSummaries(db);
   } catch {
     return [];
   } finally {
@@ -266,7 +272,7 @@ export async function saveProjectRecord(record: SavedProject): Promise<SaveSessi
   const db = await getDb();
   if (!db) return 'error';
   try {
-    await writeProject(db, record);
+    await writeProjectWithSummary(db, record);
     return 'ok';
   } catch (err) {
     if (isQuotaExceededError(err)) {
@@ -302,7 +308,7 @@ export async function renameProjectRecord(id: string, name: string): Promise<voi
   try {
     const project = await readProject(db, id);
     if (!project) return;
-    await writeProject(db, { ...project, name });
+    await writeProjectWithSummary(db, { ...project, name });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[mockswap] IndexedDB project rename failed:', err);
@@ -415,12 +421,15 @@ function writeSession(db: IDBDatabase, session: PersistedSessionV1): Promise<voi
   });
 }
 
-function readProjects(db: IDBDatabase): Promise<SavedProject[]> {
+function readProjectSummaries(db: IDBDatabase): Promise<SavedProjectSummary[]> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(PROJECTS_STORE, 'readonly');
-    const req = tx.objectStore(PROJECTS_STORE).getAll();
-    req.onsuccess = () => resolve(req.result as SavedProject[]);
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB projects read failed'));
+    const tx = db.transaction(PROJECT_SUMMARIES_STORE, 'readonly');
+    const req = tx.objectStore(PROJECT_SUMMARIES_STORE).getAll();
+    req.onsuccess = () => {
+      const rows = (req.result as SavedProjectSummary[]) ?? [];
+      resolve(rows.sort((a, b) => b.savedAt - a.savedAt));
+    };
+    req.onerror = () => reject(req.error ?? new Error('IndexedDB project summaries read failed'));
   });
 }
 
@@ -433,26 +442,34 @@ function readProject(db: IDBDatabase, id: string): Promise<SavedProject | null> 
   });
 }
 
-function writeProject(db: IDBDatabase, record: SavedProject): Promise<void> {
+/** Write the full project record and its blob-free summary in one transaction
+ *  so listProjects() never needs to materialise gigabyte zip blobs. */
+function writeProjectWithSummary(db: IDBDatabase, record: SavedProject): Promise<void> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(PROJECTS_STORE, 'readwrite');
+    const tx = db.transaction([PROJECTS_STORE, PROJECT_SUMMARIES_STORE], 'readwrite');
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('IndexedDB project transaction failed'));
     tx.onabort = () => reject(tx.error ?? new Error('IndexedDB project transaction aborted'));
     const req = tx.objectStore(PROJECTS_STORE).put(record);
     req.onerror = () => reject(req.error ?? new Error('IndexedDB project write failed'));
+    const { mutatedZipBlob, originalZipBlob, ...summary } = record;
+    const summaryReq = tx.objectStore(PROJECT_SUMMARIES_STORE).put(summary);
+    summaryReq.onerror = () => reject(summaryReq.error ?? new Error('IndexedDB project summary write failed'));
   });
 }
 
 function deleteProjectAndCheckpoints(db: IDBDatabase, projectId: string, checkpointIds: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([PROJECTS_STORE, CHECKPOINTS_STORE], 'readwrite');
+    const tx = db.transaction([PROJECTS_STORE, PROJECT_SUMMARIES_STORE, CHECKPOINTS_STORE], 'readwrite');
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('IndexedDB project delete transaction failed'));
     tx.onabort = () => reject(tx.error ?? new Error('IndexedDB project delete transaction aborted'));
 
     const projectReq = tx.objectStore(PROJECTS_STORE).delete(projectId);
     projectReq.onerror = () => reject(projectReq.error ?? new Error('IndexedDB project delete failed'));
+
+    const summaryReq = tx.objectStore(PROJECT_SUMMARIES_STORE).delete(projectId);
+    summaryReq.onerror = () => reject(summaryReq.error ?? new Error('IndexedDB project summary delete failed'));
 
     const checkpointStore = tx.objectStore(CHECKPOINTS_STORE);
     for (const checkpointId of checkpointIds) {
@@ -491,17 +508,31 @@ function writeCheckpoint(db: IDBDatabase, cp: Checkpoint): Promise<void> {
   });
 }
 
-function stripProjectBlobs(project: SavedProject): SavedProjectSummary {
-  const metadata = { ...project } as Partial<SavedProject>;
-  delete metadata.mutatedZipBlob;
-  delete metadata.originalZipBlob;
-  return metadata as SavedProjectSummary;
-}
-
 function stripCheckpointBlob(checkpoint: Checkpoint): CheckpointSummary {
   const metadata = { ...checkpoint } as Partial<Checkpoint>;
   delete metadata.mutatedZipBlob;
   return metadata as CheckpointSummary;
+}
+
+/** One-shot migration: populate `projectSummaries` from existing `projects`
+ *  records. Runs inside the v4 upgrade transaction so it is atomic. */
+function populateProjectSummaries(req: IDBOpenDBRequest): void {
+  const tx = req.transaction;
+  if (!tx) return;
+  try {
+    const projectStore = tx.objectStore(PROJECTS_STORE);
+    const summaryStore = tx.objectStore(PROJECT_SUMMARIES_STORE);
+    const getAllReq = projectStore.getAll();
+    getAllReq.onsuccess = () => {
+      const projects = getAllReq.result as SavedProject[];
+      for (const project of projects) {
+        const { mutatedZipBlob, originalZipBlob, ...summary } = project;
+        summaryStore.put(summary);
+      }
+    };
+  } catch {
+    // If the projects store doesn't exist yet (fresh DB), nothing to migrate.
+  }
 }
 
 function isQuotaExceededError(err: unknown): boolean {
